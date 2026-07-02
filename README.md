@@ -28,7 +28,7 @@ npm run warmreach -- "<company or domain>" --role "<role>" [--max N] [--dry-run]
 - `--max N` — cap contacts enriched (default 5; each enrichment = 1 Apollo credit).
 - `--dry-run` — skip Gmail, just print + log.
 
-## Setup
+## Setup — by hand, or just hand this file to Claude/GPT and it'll set you up 🤖
 
 ```bash
 npm install
