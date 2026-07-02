@@ -1,0 +1,13 @@
+node_modules/
+.env
+credentials/
+data/
+*.log
+.next/
+next-env.d.ts
+.DS_Store
+tsconfig.tsbuildinfo
+
+# Personal — never commit
+src/profile.ts
+HANDOFF.md
