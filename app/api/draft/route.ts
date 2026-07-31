@@ -2,9 +2,9 @@ import { existsSync } from "node:fs";
 import { NextResponse } from "next/server";
 import { enrichPerson } from "@/src/apollo";
 import type { Variant, Email } from "@/src/personalize";
-import { getGmailAuth, getFromAddress, hasGmailToken, createDraft } from "@/src/gmail";
+import { getGmailAuth, getFromAddress, hasGmailToken, createDraft, updateDraft } from "@/src/gmail";
 import { hunterConfigured, findEmail } from "@/src/hunter";
-import { logOutreach, alreadyContacted } from "@/src/tracker";
+import { logOutreach, lastDraftIdFor } from "@/src/tracker";
 import { profile } from "@/src/profile";
 import { rejectNonLocal } from "@/src/localGuard";
 
@@ -22,6 +22,9 @@ interface Person {
   source?: "apollo" | "hunter";
   email?: string | null;
   confidence?: number | null;
+  // Set when this run REPLACES an earlier draft for the same person (a re-draft):
+  // the old Gmail draft is deleted and the already-contacted guard is bypassed.
+  replaceDraftId?: string | null;
 }
 
 interface DraftRequest {
@@ -150,35 +153,52 @@ export async function POST(req: Request) {
             send({ id: person.id, name: fullName, title, status: "skipped", reason: "no email (Apollo or Hunter)" });
             continue;
           }
-          if (alreadyContacted(email)) {
-            send({ id: person.id, name: fullName, title, email, status: "skipped", reason: "already contacted" });
-            continue;
-          }
 
           const template = templates[person.variant] ?? templates.recruiter;
           const fullBody = `Hi ${firstName},\n\n${template.body}`;
-
-          const draftId = await createDraft(
-            auth,
-            {
-              to: email,
-              subject: template.subject,
-              body: fullBody,
-              attachmentPath: resumePath,
-            },
-            from,
-          );
-
-          logOutreach({
-            company: company.name!,
-            role,
-            name: fullName,
-            title,
-            email,
-            emailStatus,
+          const draftArgs = {
+            to: email,
             subject: template.subject,
-            draftStatus: `draft:${draftId}`,
-          });
+            body: fullBody,
+            attachmentPath: resumePath,
+          };
+
+          // Re-draft = EDIT in place. Find the existing draft — this tab's live one
+          // if we have it, else the most recent one recorded in the log for this
+          // email (covers drafts made in a previous session) — and update it. That
+          // keeps the draft id (so a scheduled send tied to it stays valid) and
+          // never leaves a duplicate. If that draft is gone (already sent/deleted),
+          // fall back to a fresh draft.
+          const priorDraftId = person.replaceDraftId || lastDraftIdFor(email);
+          let draftId: string;
+          let reason: string | undefined;
+          if (priorDraftId) {
+            try {
+              draftId = await updateDraft(auth, priorDraftId, draftArgs, from);
+              reason = "updated existing draft";
+            } catch {
+              draftId = await createDraft(auth, draftArgs, from);
+              reason = "earlier draft was gone — created a new one";
+            }
+          } else {
+            draftId = await createDraft(auth, draftArgs, from);
+          }
+
+          // Log only when a NEW draft id was minted (brand-new person, or the
+          // fallback above). An in-place edit keeps the id already on record, so
+          // the log stays accurate without ballooning.
+          if (draftId !== priorDraftId) {
+            logOutreach({
+              company: company.name!,
+              role,
+              name: fullName,
+              title,
+              email,
+              emailStatus,
+              subject: template.subject,
+              draftStatus: `draft:${draftId}`,
+            });
+          }
 
           send({
             id: person.id,
@@ -186,6 +206,7 @@ export async function POST(req: Request) {
             title,
             email,
             status: "drafted",
+            reason,
             subject: template.subject,
             bodyPreview: fullBody,
             draftId,

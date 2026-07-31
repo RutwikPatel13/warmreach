@@ -6,6 +6,7 @@
   "description": "Cold outreach made warm: find the right people at a company, personalize each email with Claude, and land Gmail drafts ready to send",
   "scripts": {
     "dev": "next dev",
+    "serve": "caffeinate -s next dev",
     "build": "next build",
     "start": "next start",
     "warmreach": "tsx src/index.ts",

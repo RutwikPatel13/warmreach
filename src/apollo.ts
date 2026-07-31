@@ -27,6 +27,56 @@ export const DEFAULT_TITLES = [
   "hiring manager",
 ];
 
+// Campaign targeting groups (Campaigns page). The user picks which groups to
+// reach at each company; the union of the picked groups' titles is passed to
+// searchContacts. Keys are stable ids the UI sends back.
+export const TITLE_GROUPS: Record<string, { label: string; titles: string[] }> = {
+  founders: {
+    label: "Founders / C-level",
+    titles: ["founder", "co-founder", "ceo", "chief executive officer", "president", "coo"],
+  },
+  engineering: {
+    label: "Engineering leaders",
+    titles: [
+      "cto",
+      "chief technology officer",
+      "vp engineering",
+      "head of engineering",
+      "director of engineering",
+      "engineering manager",
+      "head of ai",
+      "head of machine learning",
+      "principal engineer",
+      "staff engineer",
+      "tech lead",
+    ],
+  },
+  recruiters: {
+    label: "Recruiters / Talent",
+    titles: [
+      "recruiter",
+      "technical recruiter",
+      "talent acquisition",
+      "talent",
+      "head of talent",
+      "head of people",
+      "people operations",
+    ],
+  },
+};
+
+// Resolve the picked group ids (+ any freeform custom titles) into a deduped
+// title list for Apollo. Unknown ids are ignored; empty selection -> DEFAULT_TITLES.
+export function titlesForGroups(groupIds: string[], custom: string[] = []): string[] {
+  const out = new Set<string>();
+  for (const id of groupIds) TITLE_GROUPS[id]?.titles.forEach((t) => out.add(t));
+  for (const t of custom) {
+    const v = t.trim().toLowerCase();
+    if (v) out.add(v);
+  }
+  return out.size ? [...out] : DEFAULT_TITLES;
+}
+
 async function post(path: string, body: unknown): Promise<any> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
@@ -54,6 +104,7 @@ export interface Company {
   description: string | null;
   keywords: string[];
   employees?: number;
+  logoUrl?: string; // Apollo org logo (free — already on the resolved org object)
 }
 
 // Pull the company facts we personalize from off an Apollo org object. The
@@ -68,6 +119,7 @@ function companyFromOrg(org: any, fallbackDomain?: string): Company {
     description: org.short_description ?? null,
     keywords: (org.keywords ?? []).slice(0, 12),
     employees: org.estimated_num_employees ?? undefined,
+    logoUrl: org.logo_url ?? undefined,
   };
 }
 

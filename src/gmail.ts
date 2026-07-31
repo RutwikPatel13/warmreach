@@ -69,37 +69,81 @@ function encodeHeader(value: string): string {
   return value;
 }
 
+const rand = () => Date.now() + "_" + Math.random().toString(36).slice(2);
+
+// The body carries lightweight markdown — only **bold**, the one thing outreach
+// emails use. Render it to HTML: escape first (so a stray "<" or "&" can't break
+// the markup), then bold, then linkify bare URLs, then line breaks.
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function stripBold(s: string): string {
+  return s.replace(/\*\*(.+?)\*\*/g, "$1"); // for the plain-text part + the subject
+}
+function bodyToHtml(body: string): string {
+  let s = escapeHtml(body)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+    .replace(/\r?\n/g, "<br>\n");
+  return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#202124">${s}</div>`;
+}
+
 function buildRaw(from: string, args: DraftArgs): string {
-  const boundary = "rb_" + Date.now() + "_" + Math.random().toString(36).slice(2);
-  const parts: string[] = [
-    `From: ${from}`,
-    `To: ${args.to}`,
-    `Subject: ${encodeHeader(args.subject)}`,
-    "MIME-Version: 1.0",
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    "",
-    `--${boundary}`,
+  const plain = stripBold(args.body); // plain-text alternative reads clean (no "**")
+  const html = bodyToHtml(args.body);
+  const alt = "alt_" + rand();
+
+  // Body is always a plain+HTML alternative; a resume PDF, when present, wraps it
+  // in a multipart/mixed. Non-HTML clients fall back to the plain-text part.
+  const altBlock = [
+    `--${alt}`,
     "Content-Type: text/plain; charset=UTF-8",
     "",
-    args.body,
+    plain,
+    "",
+    `--${alt}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "",
+    html,
+    "",
+    `--${alt}--`,
     "",
   ];
 
+  const headers = [
+    `From: ${from}`,
+    `To: ${args.to}`,
+    `Subject: ${encodeHeader(stripBold(args.subject))}`, // subjects can't be bold
+    "MIME-Version: 1.0",
+  ];
+
+  let parts: string[];
   if (args.attachmentPath && fs.existsSync(args.attachmentPath)) {
+    const mix = "mix_" + rand();
     const name = path.basename(args.attachmentPath);
     const data = fs.readFileSync(args.attachmentPath).toString("base64");
-    parts.push(
-      `--${boundary}`,
+    parts = [
+      ...headers,
+      `Content-Type: multipart/mixed; boundary="${mix}"`,
+      "",
+      `--${mix}`,
+      `Content-Type: multipart/alternative; boundary="${alt}"`,
+      "",
+      ...altBlock,
+      `--${mix}`,
       `Content-Type: application/pdf; name="${name}"`,
       "Content-Transfer-Encoding: base64",
       `Content-Disposition: attachment; filename="${name}"`,
       "",
       data,
       "",
-    );
+      `--${mix}--`,
+      "",
+    ];
+  } else {
+    parts = [...headers, `Content-Type: multipart/alternative; boundary="${alt}"`, "", ...altBlock];
   }
 
-  parts.push(`--${boundary}--`, "");
   return Buffer.from(parts.join("\r\n")).toString("base64url");
 }
 
@@ -120,6 +164,23 @@ export async function createDraft(auth: any, args: DraftArgs, from?: string): Pr
     requestBody: { message: { raw } },
   });
   return res.data.id ?? "(unknown id)";
+}
+
+// Updates an existing draft IN PLACE — replaces its content but keeps the same
+// draft id (so a scheduled send tied to it stays valid) and never leaves a
+// duplicate behind. Used when a re-draft edits an earlier draft. The
+// gmail.compose scope covers this; no re-auth needed. Throws if the draft no
+// longer exists (already sent/deleted) — the caller falls back to createDraft.
+export async function updateDraft(auth: any, draftId: string, args: DraftArgs, from?: string): Promise<string> {
+  const gmail = google.gmail({ version: "v1", auth });
+  const fromAddr = from ?? (await getFromAddress(auth));
+  const raw = buildRaw(fromAddr, args);
+  const res = await gmail.users.drafts.update({
+    userId: "me",
+    id: draftId,
+    requestBody: { message: { raw } },
+  });
+  return res.data.id ?? draftId;
 }
 
 // Sends an existing draft (the one createDraft made) — keeps its attachment and

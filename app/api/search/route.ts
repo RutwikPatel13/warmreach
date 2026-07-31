@@ -100,6 +100,7 @@ export async function POST(req: Request) {
         orgId: company.orgId ?? null,
         description: company.description,
         keywords: company.keywords,
+        logoUrl: company.logoUrl ?? null,
       },
       companyOptions: options.map((o) => ({
         name: o.name,

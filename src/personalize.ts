@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { ANTHROPIC_API_KEY, ANTHROPIC_MODEL } from "./config";
 import { profile } from "./profile";
 import type { Contact } from "./apollo";
+import { HUMAN_EMAIL_RULES, humanize } from "./humanRules";
 
 const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
@@ -43,9 +44,10 @@ function buildPrompt(contact: Contact, role: string, jobDescription?: string): s
     "- Keep it concise (~200-240 words before the signature).",
     "- Do NOT modify the bullets or signature.",
     "- The personalization sentence must reflect real facts from the company context; if context is thin, keep it modest and honest.",
-    "- Plain text only (no markdown).",
+    "- No markdown except the **bold** allowed below.",
     "",
     `Also produce a subject line in this format: "Software Engineer application — ${profile.fullName}${profile.subjectTag ? ` (${profile.subjectTag})` : ""}". You may lightly adapt the role name to match "${role}".`,
+    HUMAN_EMAIL_RULES,
     "Return the result by calling the compose_email tool.",
   ]
     .filter(Boolean)
@@ -95,7 +97,7 @@ export async function personalizeWith(
   }
   const out = toolUse.input as { subject: string; body: string };
   return {
-    email: { subject: out.subject, body: out.body },
+    email: { subject: humanize(out.subject), body: humanize(out.body) },
     model,
     usage: {
       input_tokens: message.usage.input_tokens,
@@ -178,12 +180,13 @@ function buildVariantPrompt(
     "- Keep it concise (~200-240 words before the signature).",
     "- Do NOT modify the bullets or signature.",
     "- The personalization sentence must reflect real facts from the company context; if context is thin, keep it modest and honest.",
-    "- Plain text only (no markdown).",
+    "- No markdown except the **bold** allowed below.",
     "",
     extra
       ? `CUSTOM INSTRUCTIONS from the applicant — follow them; where they conflict with the structure or rules above, the custom instructions win:\n${extra}\n`
       : "",
     `Also produce a subject line in this format: "Software Engineer application — ${profile.fullName}${profile.subjectTag ? ` (${profile.subjectTag})` : ""}". You may lightly adapt the role name to match "${role}".`,
+    HUMAN_EMAIL_RULES,
     "Return the result by calling the compose_email tool.",
   ]
     .filter(Boolean)
@@ -229,12 +232,13 @@ function buildAdaptVariantPrompt(
     "- Rewrite anything company- or role-specific — especially the personalization sentence — so it is grounded ONLY in the company context (and job description) above; if context is thin, keep it modest and honest.",
     "- Keep the experience bullets and the signature VERBATIM as they appear in the template.",
     "- Do NOT include any greeting or salutation line (no 'Hi ...,' / 'Dear ...,'). Start with the opening paragraph — a 'Hi <name>,' line is added separately.",
-    "- Plain text only (no markdown). Keep it concise (~200-240 words before the signature).",
+    "- No markdown except the **bold** allowed below. Keep it concise (~200-240 words before the signature).",
     "- Adapt the subject line to this company/role while keeping its format.",
     "",
     extra
       ? `CUSTOM INSTRUCTIONS from the applicant — follow them; where they conflict with the rules above, the custom instructions win:\n${extra}\n`
       : "",
+    HUMAN_EMAIL_RULES,
     "Return the result by calling the compose_email tool.",
   ]
     .filter(Boolean)
@@ -264,7 +268,7 @@ export async function generateVariant(
     throw new Error("Model did not return a compose_email tool call");
   }
   const out = toolUse.input as { subject: string; body: string };
-  return { subject: out.subject, body: out.body };
+  return { subject: humanize(out.subject), body: humanize(out.body) };
 }
 
 // Two Claude calls (in parallel) — one template per audience for the whole company.
