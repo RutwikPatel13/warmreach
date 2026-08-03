@@ -1898,3 +1898,51 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 
 /* hide the credit meter on the collapsed mobile top-bar (desktop convenience) */
 @media (max-width: 820px) { .cmeter, .cmeter--skeleton { display: none; } }
+
+/* ─────────────────────────────────────────────────────────────
+   Follow-ups (app/followups/page.tsx) — company-wise, reply-aware
+   nudges. Reuses .card/.cmp-stats/.cmp-group/.cmp-crow/.cmp-prow/
+   .cmp-seg/.editor/.badge/.tag/.chip from the systems above; the
+   fu- prefix below is only for structure that doesn't exist yet.
+   Token-based so both themes work.
+   ───────────────────────────────────────────────────────────── */
+
+.fu-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+.fu-section { margin-top: 18px; }
+.fu-section .panel-head-row { padding: 4px 4px 0; }
+
+/* "Due for follow-up" — expandable company groups */
+.fu-group { margin: 0 0 12px; }
+.fu-co-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fu-people { display: flex; flex-direction: column; }
+.fu-prow { flex-wrap: wrap; gap: 10px 12px; }
+.fu-prow--muted { opacity: 0.75; cursor: default; }
+.fu-pn { font-weight: 600; }
+.fu-pt { color: var(--muted); font-size: 13px; }
+.fu-editor { margin: 12px 14px 14px; }
+.fu-editor .editor-head { flex-wrap: wrap; row-gap: 8px; }
+.fu-editor .send-btn { margin-top: 4px; }
+
+/* "Someone replied" — AI-read cards */
+.fu-reply-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+.fu-reply-card { margin-bottom: 0; }
+.fu-reply-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fu-quote {
+  margin: 10px 0 0; padding: 10px 12px; border-left: 2px solid var(--border-strong);
+  color: var(--muted); font-size: 13.5px; font-style: italic; background: var(--surface-2);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.fu-ai-read { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 13.5px; }
+.fu-reply-actions { margin-top: 12px; }
+
+/* "Applied recently" — quiet list, no action needed yet */
+.fu-recent-list { display: flex; flex-direction: column; }
+.fu-recent-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-top: 1px solid var(--border);
+}
+.fu-recent-row:first-child { border-top: none; }
+
+@media (max-width: 620px) {
+  .fu-prow { flex-wrap: wrap; }
+}

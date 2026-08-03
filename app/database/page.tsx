@@ -110,6 +110,7 @@ export default function DatabasePage() {
             {navLink("/companies", "◨", "Companies")}
             {navLink("/people", "☰", "People")}
             {navLink("/jobs", "▤", "Open roles")}
+            {navLink("/followups", "↩", "Follow-ups")}
             {navLink("/database", "▦", "Database", true)}
           </div>
         </nav>

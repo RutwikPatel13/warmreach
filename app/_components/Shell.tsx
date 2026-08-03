@@ -16,6 +16,7 @@ const NAV: { href: string; icon: string; label: string; key: string }[] = [
   { href: "/companies", icon: "◨", label: "Companies", key: "companies" },
   { href: "/people", icon: "☰", label: "People", key: "people" },
   { href: "/jobs", icon: "▤", label: "Open roles", key: "jobs" },
+  { href: "/followups", icon: "↩", label: "Follow-ups", key: "followups" },
   { href: "/database", icon: "▦", label: "Database", key: "database" },
 ];
 

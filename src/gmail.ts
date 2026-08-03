@@ -58,6 +58,12 @@ interface DraftArgs {
   subject: string;
   body: string;
   attachmentPath?: string;
+  // Reply on an existing thread (e.g. a follow-up) instead of starting a new
+  // one: threadId ties the draft to it, In-Reply-To/References are the
+  // standard headers mail clients use to render the reply inline.
+  threadId?: string;
+  inReplyTo?: string;
+  references?: string;
 }
 
 // RFC 2047 encode header values that contain non-ASCII (e.g. em-dashes),
@@ -114,6 +120,8 @@ function buildRaw(from: string, args: DraftArgs): string {
     `From: ${from}`,
     `To: ${args.to}`,
     `Subject: ${encodeHeader(stripBold(args.subject))}`, // subjects can't be bold
+    ...(args.inReplyTo ? [`In-Reply-To: ${args.inReplyTo}`] : []),
+    ...(args.references ? [`References: ${args.references}`] : []),
     "MIME-Version: 1.0",
   ];
 
@@ -161,7 +169,7 @@ export async function createDraft(auth: any, args: DraftArgs, from?: string): Pr
   const raw = buildRaw(fromAddr, args);
   const res = await gmail.users.drafts.create({
     userId: "me",
-    requestBody: { message: { raw } },
+    requestBody: { message: { raw, threadId: args.threadId } },
   });
   return res.data.id ?? "(unknown id)";
 }
