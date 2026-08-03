@@ -19,7 +19,7 @@ interface Person {
   lastName?: string | null;
   title?: string;
   variant: Variant;
-  source?: "apollo" | "hunter";
+  source?: "apollo" | "hunter" | "careers";
   email?: string | null;
   confidence?: number | null;
   // Set when this run REPLACES an earlier draft for the same person (a re-draft):
@@ -45,7 +45,7 @@ interface ResultLine {
   subject?: string;
   bodyPreview?: string;
   draftId?: string;
-  emailSource?: "apollo" | "hunter";
+  emailSource?: "apollo" | "hunter" | "careers";
   emailScore?: number;
   resumeAttached?: boolean;
 }
@@ -118,19 +118,25 @@ export async function POST(req: Request) {
           let fullName: string;
           let title: string;
           let email: string | null;
-          let emailSource: "apollo" | "hunter" = "apollo";
+          let emailSource: "apollo" | "hunter" | "careers" = "apollo";
           let emailScore: number | undefined;
           let emailStatus = "";
 
-          if (person.source === "hunter" && person.email) {
-            // Came from Hunter domain search — email already known, no Apollo credit.
+          if ((person.source === "hunter" || person.source === "careers") && person.email) {
+            // Email already known — Hunter domain search, or a generic careers inbox.
+            // Either way no Apollo enrichment, so no credit spent.
             email = person.email;
             const last = person.lastName ?? "";
-            fullName = `${firstName}${last ? " " + last : ""}`.trim();
+            fullName = `${firstName}${last ? " " + last : ""}`.trim() || person.email;
             title = person.title ?? "";
-            emailSource = "hunter";
-            emailScore = person.confidence ?? undefined;
-            emailStatus = `hunter:${person.confidence ?? ""}`;
+            if (person.source === "careers") {
+              emailSource = "careers";
+              emailStatus = "careers";
+            } else {
+              emailSource = "hunter";
+              emailScore = person.confidence ?? undefined;
+              emailStatus = `hunter:${person.confidence ?? ""}`;
+            }
           } else {
             // Apollo person — enrich (1 credit); Hunter Email Finder fallback if no email.
             const contact = await enrichPerson(person.id, domain);
@@ -155,7 +161,9 @@ export async function POST(req: Request) {
           }
 
           const template = templates[person.variant] ?? templates.recruiter;
-          const fullBody = `Hi ${firstName},\n\n${template.body}`;
+          // Careers inboxes are a team queue, not a person — address the company.
+          const greeting = person.source === "careers" ? `Hi ${company.name} team,` : `Hi ${firstName},`;
+          const fullBody = `${greeting}\n\n${template.body}`;
           const draftArgs = {
             to: email,
             subject: template.subject,

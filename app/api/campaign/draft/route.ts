@@ -18,7 +18,7 @@ interface InPerson {
   name?: string | null; // full name from a prior result row (regeneration)
   title?: string;
   variant?: Variant;
-  source?: "apollo" | "csv"; // "csv" = already on file (no enrichment credit)
+  source?: "apollo" | "csv" | "careers"; // "csv"/"careers" carry an email → no enrichment credit
   email?: string | null; // present for csv people OR when regenerating a known person
   // When set (regeneration), the email is already known so enrichment is SKIPPED
   // (no credit) and this existing Gmail draft is UPDATED in place instead of duped.
@@ -127,12 +127,12 @@ export async function POST(req: Request) {
             let emailStatus: string;
 
             if (person.email) {
-              // Email already in hand — a CSV contact, or regenerating a known person.
-              // No Apollo enrichment, so no credit spent.
+              // Email already in hand — a CSV contact, a careers inbox, or regenerating
+              // a known person. No Apollo enrichment, so no credit spent.
               email = person.email;
               fullName = person.name || `${person.firstName}${person.lastName ? " " + person.lastName : ""}`.trim() || person.email;
               title = person.title ?? "";
-              emailStatus = person.source === "csv" ? "csv" : "";
+              emailStatus = person.source === "csv" ? "csv" : person.source === "careers" ? "careers" : "";
             } else {
               const contact = await enrichPerson(person.id, company.domain ?? undefined);
               email = contact.email;
@@ -152,7 +152,9 @@ export async function POST(req: Request) {
             }
 
             const tpl = await emailFor(variant);
-            const fullBody = `Hi ${firstName},\n\n${tpl.body}`;
+            // Careers inboxes are a team queue, not a person — address the company.
+            const greeting = person.source === "careers" ? `Hi ${company.name} team,` : `Hi ${firstName},`;
+            const fullBody = `${greeting}\n\n${tpl.body}`;
             const draftArgs = { to: email, subject: tpl.subject, body: fullBody };
 
             // Re-draft = UPDATE the existing Gmail draft in place (keeps its id so a

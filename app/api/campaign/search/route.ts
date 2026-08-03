@@ -1,6 +1,7 @@
 import { resolveCompanyOptions, searchContacts, titlesForGroups } from "@/src/apollo";
 import { classifyVariant } from "@/src/personalize";
 import { contactsForCompany } from "@/src/contacts";
+import { careersInboxes } from "@/src/careers";
 import { rejectNonLocal } from "@/src/localGuard";
 
 export const runtime = "nodejs";
@@ -21,6 +22,8 @@ interface Body {
   groups?: string[];
   customTitles?: string[];
   locations?: string[];
+  all?: boolean; // "Everyone at the company" — ignore title targeting, return all people
+  careers?: boolean; // append careers@/jobs@/recruiting@ inbox rows (MX-gated, opt-in)
 }
 
 // "Strong match" without a JD: rank by how high-value the contact is for a cold
@@ -44,6 +47,14 @@ const titleMatches = (title: string, keywords: string[]) => {
   const t = (title ?? "").toLowerCase();
   return keywords.some((k) => t.includes(k));
 };
+// Identity key for de-duping an Apollo people-search hit against a contact we
+// already have on file. Search hides the email and obfuscates the last name, so
+// within an already-resolved company, first name + normalized title is the
+// strongest safe signal. This is only ever used to AVOID re-surfacing (and paying
+// to enrich) someone we already hold — the two never share an email, so a wrong
+// match can at worst hide a paid duplicate, never misdirect a draft.
+const idKey = (first: string, title: string) =>
+  `${(first ?? "").trim().toLowerCase()}|${(title ?? "").trim().toLowerCase().replace(/\s+/g, " ")}`;
 
 // Batch discovery for a campaign: resolve each company in Apollo, then people-
 // search it by the picked target titles. Streams one NDJSON line per company as
@@ -59,6 +70,8 @@ export async function POST(req: Request) {
   const companies = (body.companies ?? []).filter((c) => c?.name?.trim()).slice(0, MAX_COMPANIES);
   const titles = titlesForGroups(body.groups ?? [], body.customTitles ?? []);
   const locations = Array.isArray(body.locations) ? body.locations.filter(Boolean) : ["United States"];
+  const allPeople = body.all === true; // "Everyone at the company"
+  const wantCareers = body.careers === true; // append careers inbox rows
 
   if (companies.length === 0) {
     return Response.json({ error: "Pick at least one company (choose a list)." }, { status: 400 });
@@ -92,34 +105,40 @@ export async function POST(req: Request) {
             logoUrl: company.logoUrl ?? null,
           };
 
-          // Already have this company on file? Use those verified emails — no
-          // Apollo people-search AND no enrichment credits. Filter to the picked
-          // titles so results match the user's targeting.
+          // 1) People we already have on file for this company that match the picked
+          // titles. Verified emails → ZERO Apollo credits (no search, no enrichment).
+          // Always included, whether or not Apollo also turns them up below.
           const cached = contactsForCompany(company.name, company.domain);
-          if (cached.length) {
-            const matched = cached.filter((p) => titleMatches(p.title, titles));
-            matched.sort((a, b) => rankOf(a.title) - rankOf(b.title));
-            const people = matched.slice(0, MAX_RETURN).map((p) => ({
-              id: `csv:${p.email}`,
-              firstName: p.firstName,
-              lastName: p.lastName || null,
-              title: p.title,
-              variant: classifyVariant(p.title),
-              strong: isStrong(p.title),
-              source: "csv" as const,
-              email: p.email,
-            }));
-            resolved++;
-            totalReachable += people.length;
-            send({ type: "company", input: c.name, company: companyPayload, source: "csv", found: matched.length, reachable: people.length, people });
-            return;
-          }
+          // "Everyone" mode ignores title targeting — take every on-file person.
+          const csvMatched = allPeople ? [...cached] : cached.filter((p) => titleMatches(p.title, titles));
+          csvMatched.sort((a, b) => rankOf(a.title) - rankOf(b.title));
+          const csvPeople = csvMatched.slice(0, MAX_RETURN).map((p) => ({
+            id: `csv:${p.email}`,
+            firstName: p.firstName,
+            lastName: p.lastName || null,
+            title: p.title,
+            variant: classifyVariant(p.title),
+            strong: isStrong(p.title),
+            source: "csv" as const,
+            email: p.email as string | null,
+          }));
+          // Identities we already hold, so the same person coming back from Apollo
+          // isn't ALSO surfaced as a paid lead (see idKey — email is never crossed).
+          const csvKeys = new Set(csvMatched.map((p) => idKey(p.firstName, p.title)));
 
-          // Otherwise Apollo (free people-search; emails enriched later at draft).
-          const found = await searchContacts(company, titles, SEARCH_CAP, locations);
-          const reachable = found.filter((p) => p.has_email);
-          reachable.sort((a, b) => rankOf(a.title) - rankOf(b.title));
-          const people = reachable.slice(0, MAX_RETURN).map((p) => ({
+          // 2) Apollo people-search (FREE — no credits). Runs for EVERY company, even
+          // ones we already have on file, so we still discover people we don't hold.
+          // Emails are enriched later at draft (1 credit each) only for those picked.
+          const found = await searchContacts(company, titles, SEARCH_CAP, locations, allPeople);
+          let dedupHits = 0;
+          const apolloReachable = found.filter((p) => {
+            if (!p.has_email) return false;
+            if (csvKeys.has(idKey(p.first_name, p.title))) { dedupHits++; return false; }
+            return true;
+          });
+          apolloReachable.sort((a, b) => rankOf(a.title) - rankOf(b.title));
+          const apolloRoom = Math.max(0, MAX_RETURN - csvPeople.length);
+          const apolloPeople = apolloReachable.slice(0, apolloRoom).map((p) => ({
             id: p.id,
             firstName: p.first_name,
             lastName: null,
@@ -129,9 +148,35 @@ export async function POST(req: Request) {
             source: "apollo" as const,
             email: null as string | null,
           }));
+
+          // 3) Careers inboxes (careers@/jobs@/recruiting@) — generic GUESSES, gated
+          // by an MX check on the domain. Opt-in and never "strong" so the UI leaves
+          // them unselected; the email is in hand so drafting them costs no credit.
+          const careersPeople = wantCareers
+            ? (await careersInboxes(company.domain)).map((c) => ({
+                id: `careers:${c.email}`,
+                firstName: c.email, // shown verbatim so the user sees the address
+                lastName: null,
+                title: "generic inbox · unverified guess",
+                variant: "recruiter" as const,
+                strong: false,
+                source: "careers" as const,
+                email: c.email as string | null,
+              }))
+            : [];
+
+          // 4) Merge: on-file (free) + newly-found Apollo (paid at draft) + careers
+          // (free, opt-in), people sorted by target value with careers pinned last.
+          const ranked = [...csvPeople, ...apolloPeople];
+          ranked.sort((a, b) => rankOf(a.title) - rankOf(b.title));
+          const people = [...ranked, ...careersPeople];
+          const foundCount = found.length + csvPeople.length - dedupHits;
+          // Company pill stays "on file · free" only when the WHOLE company is free;
+          // a mix reads as apollo (per-person source still drives the credit estimate).
+          const source = apolloPeople.length === 0 && csvPeople.length > 0 ? "csv" : "apollo";
           resolved++;
-          totalReachable += reachable.length;
-          send({ type: "company", input: c.name, company: companyPayload, source: "apollo", found: found.length, reachable: reachable.length, people });
+          totalReachable += people.length;
+          send({ type: "company", input: c.name, company: companyPayload, source, found: foundCount, reachable: people.length, people });
         } catch (e: any) {
           unresolved++;
           send({ type: "unresolved", input: c.name, reason: e?.message ?? "Not found in Apollo." });

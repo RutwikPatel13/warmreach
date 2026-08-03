@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { resolveCompanyOptions, searchContacts, DEFAULT_TITLES } from "@/src/apollo";
+import { resolveCompanyOptions, searchContacts, titlesForGroups } from "@/src/apollo";
 import { hunterConfigured, domainSearch } from "@/src/hunter";
+import { careersInboxes } from "@/src/careers";
 import { rejectNonLocal } from "@/src/localGuard";
 import { selectContacts, type Fit } from "@/src/select";
 
@@ -12,12 +13,17 @@ export async function POST(req: Request) {
   if (forbidden) return forbidden;
 
   try {
-    const { company: companyInput, locations, role, jobDescription } = (await req.json()) as {
-      company?: string;
-      locations?: string[];
-      role?: string;
-      jobDescription?: string;
-    };
+    const { company: companyInput, locations, role, jobDescription, groups, customTitles, all, careers } =
+      (await req.json()) as {
+        company?: string;
+        locations?: string[];
+        role?: string;
+        jobDescription?: string;
+        groups?: string[]; // targeting groups (founders / engineering / recruiters)
+        customTitles?: string[]; // freeform title keywords
+        all?: boolean; // "Everyone at the company" — ignore title targeting
+        careers?: boolean; // append careers@/jobs@/recruiting@ inbox rows (MX-gated)
+      };
 
     if (!companyInput || !companyInput.trim()) {
       return NextResponse.json({ error: "Company is required." }, { status: 400 });
@@ -25,6 +31,9 @@ export async function POST(req: Request) {
 
     // Country filter (Apollo person_locations). Default to US; empty array = any country.
     const locs = Array.isArray(locations) ? locations.filter(Boolean) : ["United States"];
+    // Picked role groups (+ custom titles) → title list; empty falls back to DEFAULT_TITLES.
+    const titles = titlesForGroups(groups ?? [], customTitles ?? []);
+    const allPeople = all === true;
 
     // Resolve to ranked candidates; use the best, but return the rest so the UI
     // can let the user switch if the auto-pick is wrong (e.g. "Klaviyo" partner agency).
@@ -32,7 +41,7 @@ export async function POST(req: Request) {
     const company = options[0];
 
     // Apollo first (free): all reachable people (paginated, no artificial cap).
-    const found = await searchContacts(company, DEFAULT_TITLES, 500, locs);
+    const found = await searchContacts(company, titles, 500, locs, allPeople);
     let candidates = found
       .filter((p) => p.has_email)
       .map((p) => ({
@@ -40,7 +49,7 @@ export async function POST(req: Request) {
         firstName: p.first_name,
         lastName: null as string | null,
         title: p.title,
-        source: "apollo" as "apollo" | "hunter",
+        source: "apollo" as "apollo" | "hunter" | "careers",
         email: null as string | null,
         confidence: null as number | null,
         fit: null as Fit | null,
@@ -92,6 +101,25 @@ export async function POST(req: Request) {
       }
     }
 
+    // Careers inboxes (careers@/jobs@/recruiting@) — generic GUESSES gated by an MX
+    // check on the domain. Appended AFTER ranking so they aren't fed to the JD
+    // ranker; opt-in and unverified, so the UI leaves them unselected. Email is in
+    // hand, so drafting them spends no Apollo credit.
+    if (careers) {
+      for (const cx of await careersInboxes(company.domain)) {
+        candidates.push({
+          id: `careers:${cx.email}`,
+          firstName: cx.email,
+          lastName: null,
+          title: "generic inbox · unverified guess",
+          source: "careers",
+          email: cx.email,
+          confidence: null,
+          fit: null,
+        });
+      }
+    }
+
     return NextResponse.json({
       ranked,
       company: {
@@ -107,6 +135,7 @@ export async function POST(req: Request) {
         domain: o.domain ?? null,
         orgId: o.orgId ?? null,
         employees: o.employees ?? null,
+        logoUrl: o.logoUrl ?? null,
       })),
       source,
       totalFound: found.length,

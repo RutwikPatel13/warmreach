@@ -187,8 +187,13 @@ export async function resolveCompany(input: string): Promise<Company> {
 export interface SearchResult {
   id: string;
   first_name: string;
+  last_name?: string | null;
   title: string;
   has_email: boolean;
+  seniority?: string | null;
+  linkedin?: string | null;
+  photo?: string | null;
+  location?: string | null;
 }
 
 // Paginates Apollo people-search (free) up to `limit`, so big companies aren't
@@ -198,6 +203,7 @@ export async function searchContacts(
   titles: string[] = DEFAULT_TITLES,
   limit = 500,
   locations: string[] = [],
+  allPeople = false,
 ): Promise<SearchResult[]> {
   const orgFilter: Record<string, unknown> = company.orgId
     ? { organization_ids: [company.orgId] }
@@ -206,13 +212,17 @@ export async function searchContacts(
       : {};
   // Apollo's person_locations filter (e.g. ["United States"], ["Canada"]).
   const locationFilter = locations.length ? { person_locations: locations } : {};
+  // "Everyone at the company" — drop the title filter entirely so Apollo returns
+  // all people at the org (bounded by `limit`). Useful for small startups where
+  // you want to reach the whole team rather than specific roles.
+  const titleFilter = allPeople ? {} : { person_titles: titles };
 
   const out: SearchResult[] = [];
   const seen = new Set<string>(); // Apollo can repeat a person across pages — dedupe by id
   const maxPages = Math.max(1, Math.ceil(limit / 100));
   for (let page = 1; page <= maxPages; page++) {
     const data = await post("/mixed_people/api_search", {
-      person_titles: titles,
+      ...titleFilter,
       page,
       per_page: 100,
       ...orgFilter,
@@ -222,7 +232,17 @@ export async function searchContacts(
     for (const p of people) {
       if (!p.id || seen.has(p.id)) continue;
       seen.add(p.id);
-      out.push({ id: p.id, first_name: p.first_name, title: p.title, has_email: p.has_email ?? false });
+      out.push({
+        id: p.id,
+        first_name: p.first_name,
+        last_name: p.last_name ?? null,
+        title: p.title,
+        has_email: p.has_email ?? false,
+        seniority: p.seniority ?? null,
+        linkedin: p.linkedin_url ?? null,
+        photo: p.photo_url ?? null,
+        location: [p.city, p.state, p.country].filter(Boolean).join(", ") || null,
+      });
     }
     if (people.length < 100) break; // reached the last page
   }
@@ -243,6 +263,116 @@ export interface Contact {
     description: string | null;
     keywords: string[];
   };
+}
+
+// ── Company dossier + open roles (both FREE — no Apollo credits) ─────────────
+// The dossier (organizations/enrich) and job postings power the /companies,
+// dossier-modal, and /jobs surfaces. Neither endpoint consumes credits.
+
+export interface CompanyDossier {
+  orgId?: string;
+  name: string;
+  domain?: string;
+  websiteUrl?: string | null;
+  logoUrl?: string | null;
+  description: string | null;
+  industry?: string | null;
+  foundedYear?: number | null;
+  employees?: number | null;
+  location?: string | null;
+  keywords: string[];
+  technologies: string[];
+  linkedinUrl?: string | null;
+  annualRevenue?: string | null;
+  totalFunding?: string | null;
+  latestFundingStage?: string | null;
+  latestFundingDate?: string | null;
+  publiclyTraded?: string | null;
+}
+
+// Map an Apollo org (organizations/enrich) into the rich dossier the UI shows.
+function dossierFromOrg(org: any, fallbackDomain?: string): CompanyDossier {
+  const techs: string[] = Array.isArray(org.current_technologies)
+    ? org.current_technologies.map((t: any) => t?.name).filter(Boolean)
+    : Array.isArray(org.technology_names)
+      ? org.technology_names
+      : [];
+  const exchange = org.publicly_traded_exchange;
+  const symbol = org.publicly_traded_symbol;
+  return {
+    orgId: org.organization_id ?? org.id,
+    name: org.name,
+    domain: org.primary_domain ?? fallbackDomain,
+    websiteUrl: org.website_url ?? null,
+    logoUrl: org.logo_url ?? null,
+    description: org.short_description ?? org.seo_description ?? null,
+    industry: org.industry ?? null,
+    foundedYear: org.founded_year ?? null,
+    employees: org.estimated_num_employees ?? null,
+    location: [org.city, org.state, org.country].filter(Boolean).join(", ") || null,
+    keywords: (org.keywords ?? []).slice(0, 14),
+    technologies: [...new Set(techs)].slice(0, 16),
+    linkedinUrl: org.linkedin_url ?? null,
+    annualRevenue: org.annual_revenue_printed ?? null,
+    totalFunding: org.total_funding_printed ?? null,
+    latestFundingStage: org.latest_funding_stage ?? null,
+    latestFundingDate: org.latest_funding_round_date ?? null,
+    publiclyTraded: exchange && symbol ? `${exchange}: ${symbol}` : null,
+  };
+}
+
+// Resolve a company (by domain, name, or orgId+domain) and return its full
+// dossier. Prefers a domain enrich (rich); falls back to a name search (thinner).
+export async function enrichCompanyDossier(opts: {
+  orgId?: string;
+  domain?: string;
+  name?: string;
+}): Promise<CompanyDossier> {
+  let domain = opts.domain?.trim();
+  if (!domain && opts.name) {
+    const found = await searchCompanies(opts.name, 1);
+    if (found[0]?.domain) domain = found[0].domain;
+    else if (found[0]) {
+      // No domain to enrich against — return the thin company as a dossier.
+      const c = found[0];
+      return {
+        orgId: c.orgId,
+        name: c.name,
+        domain: c.domain,
+        description: c.description,
+        employees: c.employees ?? null,
+        keywords: c.keywords,
+        technologies: [],
+        logoUrl: c.logoUrl ?? null,
+      };
+    }
+  }
+  if (!domain) throw new Error("Could not resolve a company to enrich.");
+  const data = await get(`/organizations/enrich?domain=${encodeURIComponent(domain)}`);
+  if (!data.organization) throw new Error(`No Apollo organization for "${domain}".`);
+  return dossierFromOrg(data.organization, domain);
+}
+
+export interface JobPosting {
+  id: string;
+  title: string;
+  url: string | null;
+  location: string | null;
+  postedAt: string | null;
+}
+
+// A company's currently-open roles (organizations/{id}/job_postings). FREE.
+// Needs an Apollo org id — resolve the company first if you only have a name.
+export async function companyJobPostings(orgId: string, limit = 40): Promise<JobPosting[]> {
+  const data = await get(`/organizations/${encodeURIComponent(orgId)}/job_postings`);
+  const raw: any[] = data.organization_job_postings ?? [];
+  return raw.slice(0, limit).map((j) => ({
+    id: String(j.id ?? j.url ?? j.title),
+    title: j.title ?? "Untitled role",
+    url: j.url ?? null,
+    location: [j.city, j.state, j.country].filter(Boolean).join(", ") || null,
+    postedAt: j.posted_at ?? j.last_seen_at ?? null,
+  }));
 }
 
 // Costs 1 Apollo credit per matched person. Returns the verified email + full name.

@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CreditMeter } from "./_components/credits";
 
 type Variant = "recruiter" | "engineering";
 
@@ -14,11 +15,19 @@ interface Candidate {
   firstName: string;
   lastName?: string | null;
   title: string;
-  source?: "apollo" | "hunter";
+  source?: "apollo" | "hunter" | "careers";
   email?: string | null;
   confidence?: number | null;
   fit?: Fit | null;
 }
+
+// Role-targeting groups — ids match TITLE_GROUPS keys in src/apollo.ts so the
+// server expands them to the right person_titles. All three preselected by default.
+const ROLE_GROUPS: { id: string; label: string }[] = [
+  { id: "founders", label: "Founders / C-level" },
+  { id: "engineering", label: "Engineering leaders" },
+  { id: "recruiters", label: "Recruiters / Talent" },
+];
 
 interface ResolvedCompany {
   name: string;
@@ -34,6 +43,7 @@ interface CompanyOption {
   domain: string | null;
   orgId: string | null;
   employees: number | null;
+  logoUrl?: string | null;
 }
 
 interface Email {
@@ -249,23 +259,16 @@ function removeKey(key: string): void {
     /* ignore */
   }
 }
-function clearStorage(): void {
-  if (typeof window === "undefined") return;
-  try {
-    Object.keys(window.localStorage)
-      .filter((k) => k.startsWith(NS) && k !== THEME_KEY)
-      .forEach((k) => window.localStorage.removeItem(k));
-  } catch {
-    /* ignore */
-  }
-}
-
 // Durable per-workspace state — transient flags (spinners, in-flight errors) are
 // intentionally NOT persisted; they reset to idle on reload.
 interface WorkspaceSnapshot {
   company: string;
   role: string;
   jd: string;
+  groups?: string[];
+  customTitles?: string;
+  allPeople?: boolean;
+  wantCareers?: boolean;
   instructions: string;
   country: string;
   resolved: ResolvedCompany | null;
@@ -509,9 +512,84 @@ function CompanyLogo({ name, logoUrl }: { name: string; logoUrl?: string | null 
   );
 }
 
+// "Wrong company?" disambiguation for name searches (e.g. several "Nuna"s). A
+// native <select> can't render images, so this is a custom dropdown showing each
+// match's LOGO + name + domain + headcount — pick by recognizing the logo even
+// when you don't know the exact domain. Closes on outside click / Escape.
+function CompanySwitch({
+  options,
+  currentOrgId,
+  onPick,
+}: {
+  options: CompanyOption[];
+  currentOrgId: string | null;
+  onPick: (o: CompanyOption) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const current = options.find((o) => o.orgId === currentOrgId) ?? options[0];
+  const sub = (o: CompanyOption) =>
+    `${o.domain ?? "no domain"}${o.employees ? ` · ${o.employees.toLocaleString()} ppl` : ""}`;
+
+  return (
+    <div className="co-switch" ref={ref}>
+      <span className="meta">Wrong company?</span>
+      <button
+        type="button"
+        className="co-switch-btn"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <CompanyLogo name={current?.name ?? "?"} logoUrl={current?.logoUrl} />
+        <span className="co-switch-name">{current?.name ?? "Pick a match"}</span>
+        <span className="co-switch-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div className="co-switch-menu" role="listbox">
+          {options.map((o) => (
+            <button
+              type="button"
+              key={o.orgId ?? o.domain ?? o.name}
+              role="option"
+              aria-selected={o.orgId === currentOrgId}
+              className={`co-switch-opt ${o.orgId === currentOrgId ? "on" : ""}`}
+              onClick={() => {
+                onPick(o);
+                setOpen(false);
+              }}
+            >
+              <CompanyLogo name={o.name} logoUrl={o.logoUrl} />
+              <span className="co-switch-opt-main">
+                <span className="co-switch-opt-name">{o.name}</span>
+                <span className="co-switch-opt-sub">{sub(o)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CompanyWorkspace({
   storageKey,
   onTitle,
+  onIdentity,
   onStage,
   resumes,
   defaultResume,
@@ -521,6 +599,7 @@ function CompanyWorkspace({
 }: {
   storageKey: string;
   onTitle: (title: string) => void;
+  onIdentity: (info: { name: string; logoUrl?: string | null }) => void;
   onStage: (stage: number) => void;
   resumes: ResumeFile[];
   defaultResume: string;
@@ -531,6 +610,10 @@ function CompanyWorkspace({
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
   const [jd, setJd] = useState("");
+  const [groupSel, setGroupSel] = useState<Set<string>>(new Set(["founders", "engineering", "recruiters"]));
+  const [customTitles, setCustomTitles] = useState("");
+  const [allPeople, setAllPeople] = useState(false); // "Everyone at the company" — ignore role targeting
+  const [wantCareers, setWantCareers] = useState(false); // add careers@/jobs@/recruiting@ inbox rows
   const [instructions, setInstructions] = useState("");
   const [presetSel, setPresetSel] = useState(""); // selected preset id ("" = none)
   const [templateSel, setTemplateSel] = useState(""); // selected saved-template id
@@ -571,6 +654,10 @@ function CompanyWorkspace({
       setCompany(snap.company ?? "");
       setRole(snap.role ?? "");
       setJd(snap.jd ?? "");
+      setGroupSel(new Set(snap.groups ?? ["founders", "engineering", "recruiters"]));
+      setCustomTitles(snap.customTitles ?? "");
+      setAllPeople(snap.allPeople === true);
+      setWantCareers(snap.wantCareers === true);
       setInstructions(snap.instructions ?? "");
       setCountry(snap.country ?? "us");
       setResolved(snap.resolved ?? null);
@@ -593,6 +680,10 @@ function CompanyWorkspace({
       company,
       role,
       jd,
+      groups: [...groupSel],
+      customTitles,
+      allPeople,
+      wantCareers,
       instructions,
       country,
       resolved,
@@ -611,6 +702,10 @@ function CompanyWorkspace({
     company,
     role,
     jd,
+    groupSel,
+    customTitles,
+    allPeople,
+    wantCareers,
     instructions,
     country,
     resolved,
@@ -653,6 +748,16 @@ function CompanyWorkspace({
   useEffect(() => {
     onStageRef.current(allSent ? 5 : currentStep);
   }, [currentStep, allSent]);
+
+  // Push the resolved company's clean name + logo up to the sidebar tab, so the
+  // workspace list shows "Happenstance" with its logo instead of the raw typed
+  // "https://happenstance.ai". Fires on search-resolve and on hydrate-restore
+  // (each tab restores its own persisted `resolved`), so existing tabs update too.
+  const onIdentityRef = useRef(onIdentity);
+  onIdentityRef.current = onIdentity;
+  useEffect(() => {
+    if (resolved?.name) onIdentityRef.current({ name: resolved.name, logoUrl: resolved.logoUrl });
+  }, [resolved]);
 
   // ── scheduled sends (server-backed store, data/scheduled.json) ────────────
   const [scheduledList, setScheduledList] = useState<ScheduledSend[]>([]);
@@ -780,6 +885,10 @@ function CompanyWorkspace({
           locations: countryLocations(country),
           role,
           jobDescription: jd,
+          groups: [...groupSel],
+          customTitles: customTitles.split(",").map((s) => s.trim()).filter(Boolean),
+          all: allPeople,
+          careers: wantCareers,
         }),
       });
       const data = await res.json();
@@ -1181,6 +1290,57 @@ function CompanyWorkspace({
           />
         </div>
         <div className="row">
+          <label>Target these roles</label>
+          <div className="cmp-chips">
+            {ROLE_GROUPS.map((g) => (
+              <button
+                type="button"
+                key={g.id}
+                disabled={allPeople}
+                className={`cmp-chip ${groupSel.has(g.id) ? "on" : ""} ${allPeople ? "muted" : ""}`}
+                onClick={() =>
+                  setGroupSel((prev) => {
+                    const n = new Set(prev);
+                    n.has(g.id) ? n.delete(g.id) : n.add(g.id);
+                    return n;
+                  })
+                }
+              >
+                {groupSel.has(g.id) ? "✓ " : ""}{g.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`cmp-chip ${allPeople ? "on" : ""}`}
+              onClick={() => setAllPeople((v) => !v)}
+              title="Reach the whole team — ignores the role filters. Best for small startups."
+            >
+              {allPeople ? "✓ " : ""}Everyone at the company
+            </button>
+            <button
+              type="button"
+              className={`cmp-chip ${wantCareers ? "on" : ""}`}
+              onClick={() => setWantCareers((v) => !v)}
+              title="Also add a generic careers@ / jobs@ / recruiting@ inbox (MX-checked guess, free to draft, opt-in per row)."
+            >
+              {wantCareers ? "✓ " : ""}+ Careers inbox
+            </button>
+          </div>
+          {allPeople && (
+            <p className="meta">Everyone mode: role filters are ignored — the search returns all reachable people at the company (capped).</p>
+          )}
+        </div>
+        <div className="row">
+          <label htmlFor="customTitles">Custom titles (comma-sep, optional)</label>
+          <input
+            id="customTitles"
+            value={customTitles}
+            onChange={(e) => setCustomTitles(e.target.value)}
+            placeholder="design lead, head of growth"
+            disabled={allPeople}
+          />
+        </div>
+        <div className="row">
           <label htmlFor="country">Location (country)</label>
           <select id="country" value={country} onChange={(e) => setCountry(e.target.value)}>
             {COUNTRY_OPTIONS.map((o) => (
@@ -1244,24 +1404,7 @@ function CompanyWorkspace({
                 )}
               </div>
               {companyOptions.length > 1 && (
-                <div className="company-switch">
-                  <span className="meta">Wrong company?</span>
-                  <select
-                    value={resolved.orgId ?? ""}
-                    onChange={(e) => {
-                      const opt = companyOptions.find((o) => o.orgId === e.target.value);
-                      if (opt) pickCompany(opt);
-                    }}
-                  >
-                    {companyOptions.map((o) => (
-                      <option key={o.orgId ?? o.domain ?? o.name} value={o.orgId ?? ""}>
-                        {o.name}
-                        {o.domain ? ` · ${o.domain}` : ""}
-                        {o.employees ? ` · ${o.employees.toLocaleString()} ppl` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <CompanySwitch options={companyOptions} currentOrgId={resolved.orgId} onPick={pickCompany} />
               )}
               </div>
             </div>
@@ -1316,9 +1459,13 @@ function CompanyWorkspace({
                         {c.fit.priority === "high" ? "★ strong match" : "match"}
                       </span>
                     )}
-                    <span className={`tag ${classifyVariant(c.title)}`}>
-                      {VARIANT_LABEL[classifyVariant(c.title)]}
-                    </span>
+                    {c.source === "careers" ? (
+                      <span className="cmp-src-pill cmp-src-pill--guess" title="Generic role inbox guessed from the domain (MX-checked, but unverified). Free to draft; may bounce — pick sparingly.">generic · guess</span>
+                    ) : (
+                      <span className={`tag ${classifyVariant(c.title)}`}>
+                        {VARIANT_LABEL[classifyVariant(c.title)]}
+                      </span>
+                    )}
                   </span>
                 </label>
               ))}
@@ -1599,6 +1746,7 @@ function CompanyWorkspace({
 interface Tab {
   id: number;
   title: string;
+  logoUrl?: string | null; // resolved company logo for the sidebar (Apollo, free)
   stage?: number; // 1–4 (Find/Write/Draft/Send), 5 = all sent — for the sidebar dots
 }
 
@@ -1696,6 +1844,18 @@ export default function Page() {
     setTabs((t) => t.map((x) => (x.id === id ? { ...x, title } : x)));
   }
 
+  // A resolved company reports its clean name + logo; the sidebar tab adopts them
+  // (replacing the raw typed URL/domain). Guarded to a no-op when unchanged so the
+  // child's identity effect can't drive a render loop (mirrors setStage).
+  function setIdentity(id: number, info: { name: string; logoUrl?: string | null }) {
+    const logoUrl = info.logoUrl ?? null;
+    setTabs((t) =>
+      t.some((x) => x.id === id && (x.title !== info.name || (x.logoUrl ?? null) !== logoUrl))
+        ? t.map((x) => (x.id === id ? { ...x, title: info.name, logoUrl } : x))
+        : t,
+    );
+  }
+
   // Guarded so a workspace reporting its unchanged stage is a no-op (prevents a
   // render loop between the child's stage effect and this state update).
   function setStage(id: number, stage: number) {
@@ -1719,23 +1879,6 @@ export default function Page() {
     });
   }
 
-  function clearAll() {
-    setDialog({
-      kind: "confirm",
-      title: "Clear all data",
-      message:
-        "Remove every workspace and all data saved in this browser? Your Gmail drafts are not affected. This can't be undone.",
-      confirmLabel: "Clear all",
-      danger: true,
-      onConfirm: () => {
-        clearStorage();
-        const fresh = { id: nextId.current++, title: "New company" };
-        setTabs([fresh]);
-        setActiveId(fresh.id);
-      },
-    });
-  }
-
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -1749,6 +1892,9 @@ export default function Page() {
           <div className="cmp-nav">
             <a href="/" className="active" aria-current="page">◱&nbsp; Applications</a>
             <a href="/campaigns">◎&nbsp; Campaigns</a>
+            <a href="/companies">◨&nbsp; Companies</a>
+            <a href="/people">☰&nbsp; People</a>
+            <a href="/jobs">▤&nbsp; Open roles</a>
             <a href="/database">▦&nbsp; Database</a>
           </div>
         </nav>
@@ -1772,6 +1918,7 @@ export default function Page() {
                     }
                   }}
                 >
+                  <CompanyLogo name={t.title || "New company"} logoUrl={t.logoUrl} />
                   <span className="ws-name">{t.title || "New company"}</span>
                   <span className="ws-dots" aria-hidden="true">
                     {[1, 2, 3, 4].map((i) => (
@@ -1801,6 +1948,7 @@ export default function Page() {
         </div>
 
         <div className="side-foot">
+          <CreditMeter />
           <button
             type="button"
             className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
@@ -1813,14 +1961,6 @@ export default function Page() {
             </span>
             <span className="theme-toggle-label">{theme === "dark" ? "Dark" : "Light"}</span>
           </button>
-          <button
-            type="button"
-            className="side-clear"
-            title="Clear all workspaces & saved data"
-            onClick={clearAll}
-          >
-            Clear all data
-          </button>
         </div>
       </aside>
 
@@ -1832,6 +1972,7 @@ export default function Page() {
                 <CompanyWorkspace
                   storageKey={wsKey(t.id)}
                   onTitle={(title) => setTitle(t.id, title)}
+                  onIdentity={(info) => setIdentity(t.id, info)}
                   onStage={(stage) => setStage(t.id, stage)}
                   resumes={resumes}
                   defaultResume={defaultResume}

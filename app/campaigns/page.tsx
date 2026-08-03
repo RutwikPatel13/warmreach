@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CreditMeter } from "../_components/credits";
 
 // ── Campaigns: bulk, list-driven cold outreach ──────────────────────────────
 // Sibling to the Applications page (app/page.tsx). Drives outreach from the
@@ -17,7 +18,7 @@ interface ProspectCompany { name: string; domain?: string; website?: string; des
 interface ProspectList { id: string; name: string; count: number; withDomain: number; companies: ProspectCompany[]; onFile?: boolean }
 interface Group { id: string; label: string }
 
-interface Person { id: string; firstName: string; lastName?: string | null; title: string; variant: Variant; strong?: boolean; source?: "apollo" | "csv"; email?: string | null }
+interface Person { id: string; firstName: string; lastName?: string | null; title: string; variant: Variant; strong?: boolean; source?: "apollo" | "csv" | "careers"; email?: string | null }
 interface CompanyResult {
   input: string;
   company: { name: string; domain: string | null; orgId: string | null; description: string | null; keywords: string[]; logoUrl: string | null };
@@ -70,7 +71,7 @@ function formatWhen(iso: string) {
 }
 
 interface Snapshot {
-  selectedLists: string[]; groups: string[]; customTitles: string; country: string;
+  selectedLists: string[]; groups: string[]; customTitles: string; country: string; allPeople: boolean; wantCareers: boolean;
   deselectedCompanies: string[]; manualCompanies: ProspectCompany[]; skipContacted: boolean; instructions: string; baseTemplate: string;
   companyResults: CompanyResult[]; unresolved: Unresolved[]; selected: string[];
   results: Record<string, ResultLine>; resultOrder: string[];
@@ -112,6 +113,8 @@ export default function CampaignsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedLists, setSelectedLists] = useState<Set<string>>(new Set());
   const [groupSel, setGroupSel] = useState<Set<string>>(new Set(["founders", "engineering", "recruiters"]));
+  const [allPeople, setAllPeople] = useState(false); // "Everyone at the company" — ignore role targeting
+  const [wantCareers, setWantCareers] = useState(false); // append careers@/jobs@/recruiting@ inbox rows
   const [customTitles, setCustomTitles] = useState("");
   const [country, setCountry] = useState("us");
   const [deselectedCompanies, setDeselectedCompanies] = useState<Set<string>>(new Set());
@@ -175,6 +178,8 @@ export default function CampaignsPage() {
     if (s) {
       setSelectedLists(new Set(s.selectedLists ?? []));
       setGroupSel(new Set(s.groups ?? ["founders", "engineering", "recruiters"]));
+      setAllPeople(s.allPeople === true);
+      setWantCareers(s.wantCareers === true);
       setCustomTitles(s.customTitles ?? "");
       setCountry(s.country ?? "us");
       setDeselectedCompanies(new Set(s.deselectedCompanies ?? []));
@@ -199,12 +204,12 @@ export default function CampaignsPage() {
   useEffect(() => {
     if (!hydrated) return;
     saveJSON(STATE_KEY, {
-      selectedLists: [...selectedLists], groups: [...groupSel], customTitles, country,
+      selectedLists: [...selectedLists], groups: [...groupSel], customTitles, country, allPeople, wantCareers,
       deselectedCompanies: [...deselectedCompanies], manualCompanies, skipContacted, instructions, baseTemplate,
       companyResults, unresolved, selected: [...selected], results, resultOrder,
       mode, perDay, startAt, manualSent: [...manualSent],
     } satisfies Snapshot);
-  }, [hydrated, selectedLists, groupSel, customTitles, country, deselectedCompanies, manualCompanies, skipContacted,
+  }, [hydrated, selectedLists, groupSel, allPeople, wantCareers, customTitles, country, deselectedCompanies, manualCompanies, skipContacted,
       instructions, baseTemplate, companyResults, unresolved, selected, results, resultOrder, mode, perDay, startAt, manualSent]);
 
   // ── derived ──
@@ -281,7 +286,7 @@ export default function CampaignsPage() {
   const creditsEst = useMemo(() => {
     let n = 0;
     for (const c of companyResults) for (const p of c.people) {
-      if (!selected.has(p.id) || p.source === "csv" || isSent(p.id)) continue;
+      if (!selected.has(p.id) || p.source === "csv" || p.source === "careers" || isSent(p.id)) continue;
       if (results[p.id]?.email) continue; // already enriched — re-draft reuses it, no credit
       n++;
     }
@@ -347,7 +352,7 @@ export default function CampaignsPage() {
         body: JSON.stringify({
           companies: companiesToSearch.map((c) => ({ name: c.name, domain: c.domain ?? null })),
           groups: [...groupSel], customTitles: customTitles.split(",").map((s) => s.trim()).filter(Boolean),
-          locations: countryLocations(country),
+          locations: countryLocations(country), all: allPeople, careers: wantCareers,
         }),
       });
       if (!res.ok || !res.body) { const d = await res.json().catch(() => ({})); throw new Error(d.error ?? "Search failed."); }
@@ -495,6 +500,9 @@ export default function CampaignsPage() {
           <div className="cmp-nav">
             <a href="/">◱&nbsp; Applications</a>
             <a href="/campaigns" className="active" aria-current="page">◎&nbsp; Campaigns</a>
+            <a href="/companies">◨&nbsp; Companies</a>
+            <a href="/people">☰&nbsp; People</a>
+            <a href="/jobs">▤&nbsp; Open roles</a>
             <a href="/database">▦&nbsp; Database</a>
           </div>
         </nav>
@@ -515,6 +523,7 @@ export default function CampaignsPage() {
         </div>
 
         <div className="side-foot">
+          <CreditMeter />
           <button type="button" className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
             aria-pressed={theme === "dark"} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
             onClick={() => setTheme((p) => (p === "light" ? "dark" : "light"))}>
@@ -560,11 +569,22 @@ export default function CampaignsPage() {
                 <div className="field-label">Target these roles at each company</div>
                 <div className="cmp-chips">
                   {groups.map((g) => (
-                    <button type="button" key={g.id} className={`cmp-chip ${groupSel.has(g.id) ? "on" : ""}`} onClick={() => toggleGroup(g.id)}>
+                    <button type="button" key={g.id} disabled={allPeople}
+                      className={`cmp-chip ${groupSel.has(g.id) ? "on" : ""} ${allPeople ? "muted" : ""}`}
+                      onClick={() => toggleGroup(g.id)}>
                       {groupSel.has(g.id) ? "✓ " : ""}{g.label}
                     </button>
                   ))}
+                  <button type="button" className={`cmp-chip ${allPeople ? "on" : ""}`} onClick={() => setAllPeople((v) => !v)}
+                    title="Reach the whole team — ignores the role filters above. Best for small startups.">
+                    {allPeople ? "✓ " : ""}Everyone at the company
+                  </button>
+                  <button type="button" className={`cmp-chip ${wantCareers ? "on" : ""}`} onClick={() => setWantCareers((v) => !v)}
+                    title="Also add a generic careers@ / jobs@ / recruiting@ inbox per company (MX-checked guess, free to draft, opt-in per row).">
+                    {wantCareers ? "✓ " : ""}+ Careers inbox
+                  </button>
                 </div>
+                {allPeople && <p className="meta" style={{ marginTop: 6 }}>Everyone mode: role filters are ignored — the search returns all reachable people at each company (capped).</p>}
               </div>
               <div className="cmp-grid3">
                 <label className="cmp-field"><span className="field-label">Custom titles (comma-sep)</span>
@@ -667,7 +687,12 @@ export default function CampaignsPage() {
                         <span className="cmp-pn">{p.firstName}{p.lastName ? ` ${p.lastName}` : ""}</span>
                         <span className="cmp-pt">— {p.title || "—"}</span>
                         {p.strong && <span className="tag fit-high" title="Founder / engineering leader — strongest cold-outreach target">★ strong match</span>}
-                        <span className={`tag ${p.variant}`}>{VARIANT_LABEL[p.variant]}</span>
+                        {p.source === "csv" && <span className="cmp-src-pill" title="Already in your contacts — verified email, no Apollo credit">on file · free</span>}
+                        {p.source === "careers" ? (
+                          <span className="cmp-src-pill cmp-src-pill--guess" title="Generic role inbox guessed from the domain (MX-checked, but unverified). Free to draft; may bounce — pick sparingly.">generic · guess</span>
+                        ) : (
+                          <span className={`tag ${p.variant}`}>{VARIANT_LABEL[p.variant]}</span>
+                        )}
                       </label>
                     ))}
                   </div>

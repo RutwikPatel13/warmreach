@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { CreditMeter } from "../_components/credits";
 
 // ── Database: everyone you've reached out to ────────────────────────────────
 // Read-only view over data/outreach_log.csv (via /api/outreach): stat tiles, a
@@ -106,10 +107,14 @@ export default function DatabasePage() {
           <div className="cmp-nav">
             {navLink("/", "◱", "Applications")}
             {navLink("/campaigns", "◎", "Campaigns")}
+            {navLink("/companies", "◨", "Companies")}
+            {navLink("/people", "☰", "People")}
+            {navLink("/jobs", "▤", "Open roles")}
             {navLink("/database", "▦", "Database", true)}
           </div>
         </nav>
         <div className="side-foot">
+          <CreditMeter />
           <button type="button" className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
             aria-pressed={theme === "dark"} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
             onClick={() => setTheme((p) => (p === "light" ? "dark" : "light"))}>
