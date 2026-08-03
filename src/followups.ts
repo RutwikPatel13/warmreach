@@ -213,40 +213,147 @@ export interface ThreadMatch {
   threadId: string;
   lastMessageId: string; // Message-Id of the latest message — for In-Reply-To
   references: string; // space-joined Message-Ids of the whole thread — for References
+  messages: any[]; // the full thread messages, so callers don't re-fetch the thread
 }
 
-// TODO(followups): Gmail search is per-person (one list + one get per
-// candidate + one thread fetch) — fine for the handful of people at a
-// company but not batch-friendly at real scale. A production version would
-// cache thread ids alongside the draft id at send time instead of
-// re-searching on every scan.
+// Transient Gmail failures (rate-limit 429, 5xx) get a couple of short backoffs
+// so a blip doesn't sink a whole scan.
+async function withRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
+  let lastErr: any;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const code = e?.code ?? e?.response?.status;
+      if ((code === 429 || code === 500 || code === 503) && i < tries - 1) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+}
+
+// Discovered thread ids are cached (email -> threadId) so a RE-scan is a cheap
+// lookup instead of a fresh Gmail search per person — the scan's biggest cost.
+// The outreach log only ever stored a draft id, so the first scan still has to
+// search; every scan after is fast. Loaded once per process, flushed by
+// scanFollowups. Lives under data/ (gitignored) so nothing leaks.
+const THREAD_CACHE = path.resolve("data/followups_threads.json");
+let _threadCache: Record<string, { threadId: string; cachedAt: string }> | null = null;
+let _threadCacheDirty = false;
+function threadCache(): Record<string, { threadId: string; cachedAt: string }> {
+  if (_threadCache) return _threadCache;
+  try {
+    _threadCache = JSON.parse(fs.readFileSync(THREAD_CACHE, "utf8"));
+  } catch {
+    _threadCache = {};
+  }
+  return _threadCache!;
+}
+function rememberThread(email: string, threadId: string): void {
+  const c = threadCache();
+  const k = email.toLowerCase();
+  if (c[k]?.threadId === threadId) return;
+  c[k] = { threadId, cachedAt: new Date().toISOString() };
+  _threadCacheDirty = true;
+}
+function forgetThread(email: string): void {
+  const c = threadCache();
+  const k = email.toLowerCase();
+  if (c[k]) {
+    delete c[k];
+    _threadCacheDirty = true;
+  }
+}
+export function flushThreadCache(): void {
+  if (!_threadCacheDirty || !_threadCache) return;
+  try {
+    fs.mkdirSync(path.dirname(THREAD_CACHE), { recursive: true });
+    fs.writeFileSync(THREAD_CACHE, JSON.stringify(_threadCache, null, 2));
+    _threadCacheDirty = false;
+  } catch {
+    /* the cache is an optimization — a failed write just means the next scan re-searches */
+  }
+}
+
+// Find (or recall) this person's Gmail thread. A cached threadId goes straight to
+// the thread fetch; otherwise search Sent, taking the single obvious match and
+// only time-ranking when there are several sends to the same address.
 export async function findThreadForPerson(auth: any, email: string, aroundIso: string): Promise<ThreadMatch | null> {
   const gmail = google.gmail({ version: "v1", auth });
-  const list = await gmail.users.messages.list({ userId: "me", q: `in:sent to:${email}`, maxResults: 10 });
-  const candidates = list.data.messages ?? [];
-  if (candidates.length === 0) return null;
+  let threadId: string | null = threadCache()[email.toLowerCase()]?.threadId ?? null;
 
-  const around = Date.parse(aroundIso) || Date.now();
-  let best: { threadId: string; diff: number } | null = null;
-  for (const c of candidates) {
-    if (!c.id || !c.threadId) continue;
-    const msg = await gmail.users.messages.get({ userId: "me", id: c.id, format: "minimal" });
-    const at = Number(msg.data.internalDate ?? 0);
-    const diff = Math.abs(at - around);
-    if (!best || diff < best.diff) best = { threadId: c.threadId, diff };
+  if (!threadId) {
+    const list = await withRetry(() =>
+      gmail.users.messages.list({ userId: "me", q: `in:sent to:${email}`, maxResults: 5 }),
+    );
+    const candidates = list.data.messages ?? [];
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) {
+      threadId = candidates[0].threadId ?? null;
+    } else {
+      // Several sends to this address — pick the thread closest to the logged send.
+      const around = Date.parse(aroundIso) || Date.now();
+      let best: { threadId: string; diff: number } | null = null;
+      for (const c of candidates) {
+        if (!c.id || !c.threadId) continue;
+        const msg = await withRetry(() => gmail.users.messages.get({ userId: "me", id: c.id!, format: "minimal" }));
+        const diff = Math.abs(Number(msg.data.internalDate ?? 0) - around);
+        if (!best || diff < best.diff) best = { threadId: c.threadId, diff };
+      }
+      threadId = best?.threadId ?? candidates[0].threadId ?? null;
+    }
+    if (!threadId) return null;
   }
-  if (!best) return null;
 
-  const thread = await gmail.users.threads.get({ userId: "me", id: best.threadId, format: "full" });
-  const messages = thread.data.messages ?? [];
+  let messages: any[];
+  try {
+    const thread = await withRetry(() => gmail.users.threads.get({ userId: "me", id: threadId!, format: "full" }));
+    messages = thread.data.messages ?? [];
+  } catch {
+    forgetThread(email); // stale cache (thread deleted) — drop it so next scan re-searches
+    return null;
+  }
   if (messages.length === 0) return null;
+
+  rememberThread(email, threadId);
   const last = messages[messages.length - 1];
   const lastMessageId = headerValue(last.payload?.headers as any, "Message-Id");
   const references = messages
     .map((m) => headerValue(m.payload?.headers as any, "Message-Id"))
     .filter(Boolean)
     .join(" ");
-  return { threadId: best.threadId, lastMessageId, references };
+  return { threadId, lastMessageId, references, messages };
+}
+
+// Bounces (NDRs) almost always arrive as a SEPARATE thread from a mailer-daemon,
+// not inside the original conversation — so walking each person's thread can't
+// catch them. Instead do ONE mailbox search for delivery-failure messages and
+// pull every email address out of them; scanFollowups marks any of our people
+// whose address shows up. Extra addresses in the set are harmless — we only ever
+// intersect against known recipients. Runs once per scan, not per person.
+const EMAIL_RE = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+export async function findBouncedAddresses(auth: any, days = 90): Promise<string[]> {
+  const gmail = google.gmail({ version: "v1", auth });
+  const q =
+    `(from:mailer-daemon OR from:postmaster OR subject:("delivery status notification" OR ` +
+    `undeliverable OR "delivery failed" OR "returned to sender")) newer_than:${days}d`;
+  const list = await gmail.users.messages.list({ userId: "me", q, maxResults: 100 });
+  const found = new Set<string>();
+  for (const m of list.data.messages ?? []) {
+    if (!m.id) continue;
+    try {
+      const full = await gmail.users.messages.get({ userId: "me", id: m.id, format: "full" });
+      const text = extractPlainText(full.data.payload) || full.data.snippet || "";
+      for (const addr of text.match(EMAIL_RE) ?? []) found.add(addr.toLowerCase());
+    } catch {
+      /* skip an unreadable NDR */
+    }
+  }
+  return [...found];
 }
 
 function decodePart(data?: string | null): string {
@@ -303,18 +410,19 @@ export interface ScannedThread {
 // thread found -> "quiet" (can't tell, so cadence just applies as normal). A
 // bounce is detected deterministically; a genuine reply is classified once by
 // Claude.
-export async function scanPersonThread(auth: any, fromAddr: string, person: PersonRecord): Promise<ScannedThread> {
+export async function scanPersonThread(auth: any, _fromAddr: string, person: PersonRecord): Promise<ScannedThread> {
   const match = await findThreadForPerson(auth, person.email, person.lastTouchAt);
   if (!match) return { status: "quiet", threadId: null, reply: null };
 
-  const gmail = google.gmail({ version: "v1", auth });
-  const thread = await gmail.users.threads.get({ userId: "me", id: match.threadId, format: "full" });
-  const messages = thread.data.messages ?? [];
+  const messages = match.messages; // reuse the thread findThreadForPerson already fetched
 
+  // A genuine reply is the most recent message that is NOT ours — identified by
+  // the Gmail SENT/DRAFT labels. (Comparing the From header to our own address
+  // breaks on aliases/send-as and misreads our OWN outreach as a reply.)
   let inbound: any = null;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const from = addressOf(headerValue(messages[i].payload?.headers as any, "From"));
-    if (from && from !== fromAddr.toLowerCase()) {
+    const labels: string[] = messages[i].labelIds ?? [];
+    if (!labels.includes("SENT") && !labels.includes("DRAFT")) {
       inbound = messages[i];
       break;
     }
@@ -510,7 +618,9 @@ export interface CompanyState {
 }
 
 export interface ScanOptions {
-  maxCompanies?: number; // safety cap on Gmail/Claude calls for one scan
+  offset?: number; // batch start — companies are oldest-application-first (stable order)
+  limit?: number; // batch size; keep each scan request small so it never times out
+  bouncedAddresses?: Set<string>; // pre-computed bounced recipients (see findBouncedAddresses)
   now?: Date;
 }
 
@@ -521,13 +631,30 @@ export async function scanFollowups(
   opts: ScanOptions = {},
 ): Promise<CompanyState[]> {
   const now = opts.now ?? new Date();
-  const groups = groupApplicationsByCompany(rows).slice(0, opts.maxCompanies ?? 300);
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? 300;
+  const bounced = opts.bouncedAddresses ?? new Set<string>();
+  const groups = groupApplicationsByCompany(rows).slice(offset, offset + limit);
 
   const companies: CompanyState[] = [];
   for (const g of groups) {
     const people: PersonState[] = [];
     for (const p of g.people) {
-      const scanned = await scanPersonThread(auth, fromAddr, p);
+      // A known bounce skips the (expensive) per-person thread scan + Claude call.
+      // Isolate per-person failures — one bad thread (deleted, transient Gmail
+      // error) must not sink the whole batch; on failure treat the person as
+      // quiet so the cadence still applies.
+      let scanned: ScannedThread;
+      if (bounced.has(p.email.toLowerCase())) {
+        scanned = { status: "bounced", threadId: null, reply: null };
+      } else {
+        try {
+          scanned = await scanPersonThread(auth, fromAddr, p);
+        } catch (err) {
+          console.error(`followups: scan failed for ${p.email} (treated as quiet):`, err);
+          scanned = { status: "quiet", threadId: null, reply: null };
+        }
+      }
       const cadence = computeCadence(p, g.companyKey, now);
 
       let snoozedUntil: string | null = null;
@@ -562,5 +689,6 @@ export async function scanFollowups(
     });
   }
 
+  flushThreadCache(); // persist newly-discovered thread ids so re-scans are fast
   return companies; // already oldest-application-first from groupApplicationsByCompany
 }

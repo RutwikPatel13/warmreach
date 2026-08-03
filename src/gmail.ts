@@ -3,7 +3,10 @@ import path from "node:path";
 import { google } from "googleapis";
 import { authenticate } from "@google-cloud/local-auth";
 
-const SCOPES = ["https://www.googleapis.com/auth/gmail.compose"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.compose", // create + send drafts
+  "https://www.googleapis.com/auth/gmail.readonly", // read threads (Follow-ups reply detection)
+];
 const CRED_PATH = path.resolve("credentials/credentials.json");
 const TOKEN_PATH = path.resolve("credentials/token.json");
 

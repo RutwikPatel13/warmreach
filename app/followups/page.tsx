@@ -8,7 +8,7 @@
 // nudge yet. Nothing sends synchronously — "Send N" creates Gmail drafts and
 // queues them on the existing scheduler, same as everywhere else in the app.
 
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import Shell from "../_components/Shell";
 
 type Tone = "gentle" | "direct" | "add_value";
@@ -417,22 +417,62 @@ function FollowupsView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanned, setScanned] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const cancelRef = useRef(false);
 
+  // Scans in BATCHES so a big mailbox never hangs one request. Results + counts
+  // fill in progressively as each batch returns; "Stop" halts after the current
+  // batch. The bounced-address set is computed on the first batch and threaded
+  // back on the rest, so it's only looked up once.
   async function scan() {
+    cancelRef.current = false;
     setLoading(true);
     setError(null);
+    setScanned(true);
+    setCompanies([]);
+    setCounts(null);
+    setProgress({ done: 0, total: 0 });
+
+    const limit = 8;
+    let offset = 0;
+    let acc: CompanyState[] = [];
+    let sum: Counts = { companiesApplied: 0, someoneReplied: 0, companiesToNudge: 0, peopleToNudge: 0, bounced: 0 };
+    let bounced: string[] | undefined;
+
     try {
-      const r = await fetch("/api/followups/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error ?? "Scan failed.");
-      setCompanies(d.companies ?? []);
-      setCounts(d.counts ?? null);
-      setScanned(true);
+      while (true) {
+        const r = await fetch("/api/followups/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ offset, limit, bouncedAddresses: bounced }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error ?? "Scan failed.");
+        if (offset === 0 && Array.isArray(d.bouncedAddresses)) bounced = d.bouncedAddresses;
+
+        const batch: CompanyState[] = d.companies ?? [];
+        acc = [...acc, ...batch];
+        const c: Counts = d.counts ?? { companiesApplied: 0, someoneReplied: 0, companiesToNudge: 0, peopleToNudge: 0, bounced: 0 };
+        sum = {
+          companiesApplied: d.total ?? sum.companiesApplied, // true total, not accumulated
+          someoneReplied: sum.someoneReplied + c.someoneReplied,
+          companiesToNudge: sum.companiesToNudge + c.companiesToNudge,
+          peopleToNudge: sum.peopleToNudge + c.peopleToNudge,
+          bounced: sum.bounced + c.bounced,
+        };
+        setCompanies([...acc]);
+        setCounts({ ...sum });
+        setProgress({ done: acc.length, total: d.total ?? acc.length });
+
+        offset = d.nextOffset ?? offset + batch.length;
+        if (d.done || batch.length === 0 || cancelRef.current) break;
+      }
     } catch (e: any) {
       setError(e.message);
-      setCompanies([]);
+      if (acc.length === 0) setCompanies([]);
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   }
 
@@ -454,9 +494,31 @@ function FollowupsView() {
           </div>
           <button type="button" onClick={scan} disabled={loading}>
             {loading ? <span className="spinner" /> : null}
-            {scanned ? "Rescan Gmail" : "Scan for replies"}
+            {loading ? "Scanning…" : scanned ? "Rescan Gmail" : "Scan for replies"}
           </button>
+          {loading && (
+            <button type="button" className="ghost btn-sm" onClick={() => { cancelRef.current = true; }}>
+              Stop
+            </button>
+          )}
+          {progress && (
+            <span className="meta tnum" style={{ marginLeft: "auto" }}>
+              {progress.done}/{progress.total} companies
+            </span>
+          )}
         </div>
+        {progress && (
+          <div style={{ height: 4, background: "var(--surface-2)", borderRadius: 999, overflow: "hidden", marginTop: 10 }}>
+            <div
+              style={{
+                height: "100%",
+                width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%`,
+                background: "var(--accent)",
+                transition: "width .2s ease",
+              }}
+            />
+          </div>
+        )}
         <p className="hint" style={{ marginTop: 12 }}>
           <span className="i">◍</span>
           Cadence: nudge 1 at +4 business days, nudge 2 at +5, nudge 3 at +6 — max 3, and it stops the moment someone
