@@ -1895,6 +1895,7 @@ export default function Page() {
             <a href="/companies">◨&nbsp; Companies</a>
             <a href="/people">☰&nbsp; People</a>
             <a href="/jobs">▤&nbsp; Open roles</a>
+            <a href="/followups">↩&nbsp; Follow-ups</a>
             <a href="/database">▦&nbsp; Database</a>
           </div>
         </nav>
