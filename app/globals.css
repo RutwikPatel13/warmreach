@@ -1937,6 +1937,7 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 .fu-co--win { border-color: color-mix(in srgb, var(--ok) 38%, var(--border)); }
 .fu-co-head { display: flex; align-items: center; gap: 12px; padding: 13px 15px; }
 .fu-logo { width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 13px; }
+.fu-logo--img { object-fit: contain; background: #fff; border: 1px solid var(--border); padding: 3px; }
 .fu-co-main { flex: 1; min-width: 0; }
 .fu-co-name { font-weight: 660; font-size: 15px; letter-spacing: -0.01em; }
 .fu-co-sum { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }

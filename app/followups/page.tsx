@@ -109,7 +109,42 @@ function tint(name: string): string {
 function mono(name: string): string {
   return (name || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "?";
 }
-function Logo({ name }: { name: string }) {
+// Free/personal mail domains never represent the company.
+const FREE_MAIL = new Set([
+  "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com",
+  "live.com", "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
+]);
+// The company's own domain, inferred from the work addresses we emailed there —
+// used to fetch a real logo, with the monogram as a graceful fallback.
+function companyDomain(people: { email: string }[]): string | null {
+  const counts = new Map<string, number>();
+  for (const p of people) {
+    const at = (p.email || "").indexOf("@");
+    if (at < 0) continue;
+    const dom = p.email.slice(at + 1).toLowerCase().trim();
+    if (!dom || FREE_MAIL.has(dom)) continue;
+    counts.set(dom, (counts.get(dom) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [d, n] of counts) if (n > bestN) [best, bestN] = [d, n];
+  return best;
+}
+function Logo({ name, people }: { name: string; people: { email: string }[] }) {
+  const domain = companyDomain(people);
+  const [failed, setFailed] = useState(false);
+  if (domain && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        className="fu-logo fu-logo--img"
+        src={`https://icons.duckduckgo.com/ip3/${domain}.ico`}
+        alt=""
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
   return (
     <span className="fu-logo" style={{ background: tint(name) }} aria-hidden="true">
       {mono(name)}
@@ -327,7 +362,7 @@ function DueCompanyCard({ c }: { c: CompanyState }) {
   return (
     <div className="fu-co fu-co--hot">
       <div className="fu-co-head">
-        <Logo name={c.company} />
+        <Logo name={c.company} people={c.people} />
         <div className="fu-co-main">
           <div className="fu-co-name">{c.company}</div>
           <div className="fu-co-sum">
@@ -385,7 +420,7 @@ function RepliedCompanyCard({ c }: { c: CompanyState }) {
   return (
     <div className="fu-co fu-co--win">
       <div className="fu-co-head">
-        <Logo name={c.company} />
+        <Logo name={c.company} people={c.people} />
         <div className="fu-co-main">
           <div className="fu-co-name">{c.company}</div>
           <div className="fu-co-sum">{c.role || "application"}</div>
@@ -603,7 +638,7 @@ function FollowupsView() {
           <div className="card" style={{ padding: "4px 14px" }}>
             {recent.map((c) => (
               <div key={c.companyKey} className="fu-recent-row">
-                <Logo name={c.company} />
+                <Logo name={c.company} people={c.people} />
                 <strong>{c.company}</strong>
                 <span className="meta">
                   {c.role || "application"} · applied {fmtDate(c.appliedAt)} · {c.people.length} contacted
