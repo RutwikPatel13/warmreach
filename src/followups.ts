@@ -692,3 +692,41 @@ export async function scanFollowups(
   flushThreadCache(); // persist newly-discovered thread ids so re-scans are fast
   return companies; // already oldest-application-first from groupApplicationsByCompany
 }
+
+// ── Persisted scan result — so reopening /followups shows the LAST scan without
+// re-running it (a scan is minutes of Gmail + Claude work). Written batch-by-
+// batch under data/ (gitignored). ────────────────────────────────────────────
+const SCAN_CACHE = path.resolve("data/followups_scan.json");
+export interface ScanResult {
+  scannedAt: string; // when this scan began (offset 0)
+  complete: boolean; // false while a scan is still in progress
+  total: number;
+  companies: CompanyState[];
+}
+export function readScanResult(): ScanResult | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SCAN_CACHE, "utf8"));
+    return parsed && Array.isArray(parsed.companies) ? (parsed as ScanResult) : null;
+  } catch {
+    return null;
+  }
+}
+// Append a batch to the persisted result. reset=true (offset 0) starts a fresh
+// scan; batches are non-overlapping (offset-based) so we just concatenate.
+export function saveScanBatch(
+  companies: CompanyState[],
+  opts: { reset: boolean; complete: boolean; total: number },
+): void {
+  const cur = opts.reset ? null : readScanResult();
+  const all = opts.reset ? companies : [...(cur?.companies ?? []), ...companies];
+  const scannedAt = opts.reset ? new Date().toISOString() : cur?.scannedAt ?? new Date().toISOString();
+  try {
+    fs.mkdirSync(path.dirname(SCAN_CACHE), { recursive: true });
+    fs.writeFileSync(
+      SCAN_CACHE,
+      JSON.stringify({ scannedAt, complete: opts.complete, total: opts.total, companies: all }, null, 2),
+    );
+  } catch {
+    /* persistence is a convenience — a failed write just means the next open re-scans */
+  }
+}

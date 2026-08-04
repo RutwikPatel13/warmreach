@@ -1,14 +1,15 @@
 "use client";
 
 // /followups — company-wise, reply-aware follow-ups over the Applications log.
-// Scans Gmail (retroactively — works on mail sent before this page existed)
-// for replies, reads them with Claude, and surfaces three things: who
-// replied (with an AI read + a hold/nudge recommendation), who's due for a
-// nudge (oldest application first), and who was contacted too recently to
-// nudge yet. Nothing sends synchronously — "Send N" creates Gmail drafts and
-// queues them on the existing scheduler, same as everywhere else in the app.
+// Scans Gmail (retroactively — works on mail sent before this page existed) for
+// replies, reads them with Claude, and surfaces: who replied (AI read + a
+// hold/nudge recommendation), who's due for a nudge (oldest application first),
+// and who was contacted too recently to nudge yet. The last scan is PERSISTED
+// (server-side), so reopening the page shows it instantly — no re-scan. Nothing
+// sends synchronously: "Send N" creates Gmail drafts and queues them on the
+// existing scheduler.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Shell from "../_components/Shell";
 
 type Tone = "gentle" | "direct" | "add_value";
@@ -72,7 +73,6 @@ const TONES: { id: Tone; label: string }[] = [
   { id: "direct", label: "Direct" },
   { id: "add_value", label: "Add value" },
 ];
-
 const CATEGORY_LABEL: Record<ReplyCategory, string> = {
   interested: "Interested",
   auto_ack: "Auto-ack",
@@ -87,20 +87,54 @@ function fmtDate(s: string | null): string {
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+function relTime(iso: string | null): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
 function firstName(name: string): string {
   return (name || "").trim().split(/\s+/)[0] || "there";
 }
+function tint(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `hsl(${h} 45% 45%)`;
+}
+function mono(name: string): string {
+  return (name || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "?";
+}
+function Logo({ name }: { name: string }) {
+  return (
+    <span className="fu-logo" style={{ background: tint(name) }} aria-hidden="true">
+      {mono(name)}
+    </span>
+  );
+}
 
-// Companies where someone replied: non-interested (deflection/rejection/
-// auto_ack/out_of_office) first, "interested" (hold) last.
+// Replied companies: non-committal replies (deflection/rejection/auto_ack/OOO)
+// first, genuinely "interested" ones last.
 function sortReplied(companies: CompanyState[]): CompanyState[] {
   return [...companies].sort((a, b) => (a.someoneInterested ? 1 : 0) - (b.someoneInterested ? 1 : 0));
 }
-
 function primaryReply(c: CompanyState): PersonState | null {
-  const interested = c.people.find((p) => p.reply?.category === "interested");
-  if (interested) return interested;
-  return c.people.find((p) => p.reply) ?? null;
+  return c.people.find((p) => p.reply?.category === "interested") ?? c.people.find((p) => p.reply) ?? null;
+}
+// A company where the only reply(ies) are out-of-office is best labeled snoozed.
+function pillFor(c: CompanyState): { label: string; tone: "hold" | "snoozed" | "nudge" } {
+  if (c.recommendation === "hold") return { label: "Hold", tone: "hold" };
+  const soonestSnooze = c.people
+    .map((p) => p.snoozedUntil)
+    .filter((d): d is string => Boolean(d))
+    .sort()[0];
+  const onlyOoo = c.someoneReplied && c.people.every((p) => p.status !== "replied");
+  if (onlyOoo && soonestSnooze) return { label: `Snoozed → ${fmtDate(soonestSnooze)}`, tone: "snoozed" };
+  return { label: "Nudge the rest", tone: "nudge" };
 }
 
 interface DraftState {
@@ -112,7 +146,6 @@ interface DraftState {
   loading: boolean;
   error: string | null;
 }
-
 function useDraft(company: CompanyState, anchor: PersonState | undefined) {
   const [tone, setTone] = useState<Tone>("gentle");
   const [draft, setDraft] = useState<DraftState | null>(null);
@@ -120,7 +153,11 @@ function useDraft(company: CompanyState, anchor: PersonState | undefined) {
   async function generate(nextTone?: Tone) {
     if (!anchor) return;
     const t = nextTone ?? tone;
-    setDraft((d) => (d ? { ...d, loading: true, error: null } : { subject: "", body: "", threadId: null, inReplyTo: null, references: null, loading: true, error: null }));
+    setDraft((d) =>
+      d
+        ? { ...d, loading: true, error: null }
+        : { subject: "", body: "", threadId: null, inReplyTo: null, references: null, loading: true, error: null },
+    );
     try {
       const r = await fetch("/api/followups/draft", {
         method: "POST",
@@ -134,20 +171,18 @@ function useDraft(company: CompanyState, anchor: PersonState | undefined) {
       setDraft((d) => ({ ...(d ?? { subject: "", body: "", threadId: null, inReplyTo: null, references: null }), loading: false, error: e.message }));
     }
   }
-
   return { tone, setTone, draft, setDraft, generate };
 }
 
-// ── A company card in "Due for follow-up" — expandable, with the checkbox
-// list + inline composer + Send/Schedule. ───────────────────────────────────
-function DueCompanyCard({ c }: { c: CompanyState }) {
-  const [open, setOpen] = useState(false);
-  const quiet = c.people.filter((p) => p.status === "quiet" && !p.snoozedUntil);
-  const bounced = c.people.filter((p) => p.status === "bounced");
+// ── Shared composer: pick who to nudge, choose a tone, generate/edit the
+// template, and schedule. Used by BOTH the Due cards and the "Follow up the rest
+// anyway" action so they behave identically. ─────────────────────────────────
+function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: PersonState[] }) {
   const anchor = quiet.find((p) => p.cadence.due) ?? quiet[0];
-
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(quiet.filter((p) => p.cadence.due).map((p) => p.email)));
-  const { tone, setTone, draft, setDraft, generate } = useDraft(c, anchor);
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set((quiet.some((p) => p.cadence.due) ? quiet.filter((p) => p.cadence.due) : quiet).map((p) => p.email)),
+  );
+  const { tone, setTone, draft, setDraft, generate } = useDraft(company, anchor);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
@@ -169,7 +204,7 @@ function DueCompanyCard({ c }: { c: CompanyState }) {
         .map((p) => ({
           email: p.email,
           name: p.name,
-          company: c.company,
+          company: company.company,
           subject: draft.subject,
           body: `Hi ${firstName(p.name)},\n\n${draft.body}`,
           tone,
@@ -195,217 +230,197 @@ function DueCompanyCard({ c }: { c: CompanyState }) {
     }
   }
 
+  if (quiet.length === 0) return <p className="meta" style={{ padding: "6px 2px" }}>No one left to nudge here.</p>;
+
   return (
-    <div className="cmp-group fu-group">
-      <div className="cmp-crow">
-        <div className="fu-co-main">
-          <strong>{c.company}</strong>
-          <span className="meta">
-            {c.role || "application"} · applied {fmtDate(c.appliedAt)} · {c.dueCount} due
-            {bounced.length > 0 ? ` · ${bounced.length} bounced` : ""}
-          </span>
+    <>
+      <div className="fu-people">
+        {quiet.map((p) => (
+          <label key={p.email} className="fu-prow">
+            <input type="checkbox" checked={selected.has(p.email)} onChange={() => toggle(p.email)} />
+            <span className="fu-pn">{p.name || p.email}</span>
+            <span className="fu-pt">{p.title}</span>
+            <span className="meta">
+              {p.cadence.due
+                ? `due · nudge ${p.cadence.nextNudgeNumber} · ${p.cadence.businessDaysSince}bd`
+                : p.cadence.exhausted
+                  ? "max follow-ups reached"
+                  : `${p.cadence.businessDaysSince}/${p.cadence.threshold ?? "-"}bd`}
+            </span>
+          </label>
+        ))}
+      </div>
+
+      <div className="editor fu-editor">
+        <div className="editor-head">
+          <strong>Follow-up template</strong>
+          <div className="cmp-seg">
+            {TONES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={tone === t.id ? "on" : ""}
+                onClick={() => {
+                  setTone(t.id);
+                  void generate(t.id);
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="ghost btn-sm" onClick={() => void generate()} disabled={draft?.loading}>
+            {draft ? "Regenerate" : "Generate"}
+          </button>
         </div>
+
+        {draft?.error && <div className="error-box">{draft.error}</div>}
+        {draft?.loading && (
+          <p className="meta">
+            <span className="spinner" /> writing…
+          </p>
+        )}
+        {!draft && (
+          <p className="hint">
+            <span className="i">◍</span>
+            Pick a tone (or hit Generate) to write the follow-up, then edit it before scheduling.
+          </p>
+        )}
+        {draft && !draft.loading && (
+          <>
+            <label className="field-label">Subject</label>
+            <input value={draft.subject} onChange={(e) => setDraft((d) => (d ? { ...d, subject: e.target.value } : d))} />
+            <label className="field-label">Body</label>
+            <textarea
+              className="body-editor"
+              value={draft.body}
+              onChange={(e) => setDraft((d) => (d ? { ...d, body: e.target.value } : d))}
+            />
+            <p className="hint">
+              <span className="i">◍</span>
+              Sends as plain text on the SAME thread as the original email when we can find it — no tracking pixel.
+              Skips anyone who replies before it sends.
+            </p>
+            {sendError && <div className="error-box">{sendError}</div>}
+            {sent ? (
+              <span className="badge drafted">Scheduled ✓</span>
+            ) : (
+              <button type="button" className="send-btn" disabled={sending || selected.size === 0} onClick={send}>
+                {sending ? <span className="spinner" /> : null}
+                Send {selected.size} / Schedule
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── "Due for follow-up" company card — monogram, summary, expand into the
+// composer (+ any bounced people). ───────────────────────────────────────────
+function DueCompanyCard({ c }: { c: CompanyState }) {
+  const [open, setOpen] = useState(false);
+  const quiet = c.people.filter((p) => p.status === "quiet" && !p.snoozedUntil);
+  const bounced = c.people.filter((p) => p.status === "bounced");
+
+  return (
+    <div className="fu-co fu-co--hot">
+      <div className="fu-co-head">
+        <Logo name={c.company} />
+        <div className="fu-co-main">
+          <div className="fu-co-name">{c.company}</div>
+          <div className="fu-co-sum">
+            <span>applied {fmtDate(c.appliedAt)}</span>
+            <span className="sep">·</span>
+            <span>{c.people.length} people</span>
+            <span className="sep">·</span>
+            <span className="mini"><i style={{ background: "var(--warn)" }} /><b>{c.dueCount}</b> due</span>
+            {bounced.length > 0 && (
+              <>
+                <span className="sep">·</span>
+                <span className="mini"><i style={{ background: "var(--err)" }} />{bounced.length} bounced</span>
+              </>
+            )}
+          </div>
+        </div>
+        <span className="fu-pill quiet">{c.dueCount} to nudge</span>
         <button type="button" className="ghost btn-sm" onClick={() => setOpen((v) => !v)}>
           {open ? "Hide" : `Show ${c.people.length}`}
         </button>
       </div>
 
       {open && (
-        <>
-          <div className="fu-people">
-            {quiet.map((p) => (
-              <label key={p.email} className="cmp-prow fu-prow">
-                <input type="checkbox" checked={selected.has(p.email)} onChange={() => toggle(p.email)} />
-                <span className="fu-pn">{p.name || p.email}</span>
-                <span className="fu-pt">{p.title}</span>
-                <span className="meta">
-                  {p.cadence.due
-                    ? `due · nudge ${p.cadence.nextNudgeNumber} · ${p.cadence.businessDaysSince}bd since last touch`
-                    : p.cadence.exhausted
-                      ? "max follow-ups reached"
-                      : `${p.cadence.businessDaysSince}/${p.cadence.threshold ?? "-"}bd`}
-                </span>
-              </label>
-            ))}
-            {bounced.map((p) => (
-              <div key={p.email} className="cmp-prow fu-prow fu-prow--muted">
-                <span className="fu-pn">{p.name || p.email}</span>
-                <span className="fu-pt">{p.title}</span>
-                <a className="btn-link-ghost btn-xs" href={`/people?name=${encodeURIComponent(c.company)}`}>
-                  Bounced · find another
-                </a>
-              </div>
-            ))}
-          </div>
-
-          {quiet.length > 0 && (
-            <div className="editor fu-editor">
-              <div className="editor-head">
-                <strong>Follow-up template</strong>
-                <div className="cmp-seg">
-                  {TONES.map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className={tone === t.id ? "on" : ""}
-                      onClick={() => {
-                        setTone(t.id);
-                        void generate(t.id);
-                      }}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
+        <div className="fu-co-exp">
+          {bounced.length > 0 && (
+            <div className="fu-people">
+              {bounced.map((p) => (
+                <div key={p.email} className="fu-prow fu-prow--muted">
+                  <span className="fu-pn">{p.name || p.email}</span>
+                  <span className="fu-pt">{p.title}</span>
+                  <a className="btn-link-ghost btn-xs" style={{ marginLeft: "auto" }} href={`/people?name=${encodeURIComponent(c.company)}`}>
+                    Bounced · find another
+                  </a>
                 </div>
-                <button type="button" className="ghost btn-sm" onClick={() => void generate()} disabled={draft?.loading}>
-                  {draft ? "Regenerate" : "Generate"}
-                </button>
-              </div>
-
-              {draft?.error && <div className="error-box">{draft.error}</div>}
-              {draft?.loading && (
-                <p className="meta">
-                  <span className="spinner" /> writing…
-                </p>
-              )}
-
-              {draft && !draft.loading && (
-                <>
-                  <label className="field-label">Subject</label>
-                  <input
-                    value={draft.subject}
-                    onChange={(e) => setDraft((d) => (d ? { ...d, subject: e.target.value } : d))}
-                  />
-                  <label className="field-label">Body</label>
-                  <textarea
-                    className="body-editor"
-                    value={draft.body}
-                    onChange={(e) => setDraft((d) => (d ? { ...d, body: e.target.value } : d))}
-                  />
-                  <p className="hint">
-                    <span className="i">◍</span>
-                    Sends as plain text on the SAME thread as the original email when we can find it — no tracking
-                    pixel. Skips anyone who replies before it sends.
-                  </p>
-                  {sendError && <div className="error-box">{sendError}</div>}
-                  {sent ? (
-                    <span className="badge drafted">Scheduled ✓</span>
-                  ) : (
-                    <button type="button" className="send-btn" disabled={sending || selected.size === 0} onClick={send}>
-                      {sending ? <span className="spinner" /> : null}
-                      Send {selected.size} / Schedule
-                    </button>
-                  )}
-                </>
-              )}
+              ))}
             </div>
           )}
-        </>
+          <FollowupComposer company={c} quiet={quiet} />
+        </div>
       )}
     </div>
   );
 }
 
-// A company where everyone who's replied is "out of office" (no interested,
-// no other reply) is best summarized as snoozed rather than hold/nudge.
-function pillFor(c: CompanyState): { label: string; tone: "hold" | "snoozed" | "nudge" } {
-  if (c.recommendation === "hold") return { label: "Hold", tone: "hold" };
-  const soonestSnooze = c.people
-    .map((p) => p.snoozedUntil)
-    .filter((d): d is string => Boolean(d))
-    .sort()[0];
-  const onlyOoo = c.someoneReplied && c.people.every((p) => p.status !== "replied");
-  if (onlyOoo && soonestSnooze) return { label: `Snoozed → ${fmtDate(soonestSnooze)}`, tone: "snoozed" };
-  return { label: "Nudge the rest", tone: "nudge" };
-}
-
-// ── A company card in "Someone replied" — the AI read + hold/nudge action. ──
+// ── "Someone replied" company card — the AI read + a reveal that opens the SAME
+// composer as the Due cards. ─────────────────────────────────────────────────
 function RepliedCompanyCard({ c }: { c: CompanyState }) {
   const reply = primaryReply(c);
   const quiet = c.people.filter((p) => p.status === "quiet" && !p.snoozedUntil);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-
-  async function followUpRestAnyway() {
-    const anchor = quiet[0];
-    if (!anchor) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const draftRes = await fetch("/api/followups/draft", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: anchor.email, company: c.company, role: c.role, tone: "gentle" }),
-      });
-      const d0 = await draftRes.json();
-      if (!draftRes.ok) throw new Error(d0.error ?? "Could not generate a follow-up draft.");
-
-      const items = quiet.map((p) => ({
-        email: p.email,
-        name: p.name,
-        company: c.company,
-        subject: d0.subject,
-        body: `Hi ${firstName(p.name)},\n\n${d0.body}`,
-        tone: "gentle",
-        nudgeNumber: p.cadence.nextNudgeNumber ?? 1,
-        threadId: p.email === anchor.email ? d0.threadId : null,
-        inReplyTo: p.email === anchor.email ? d0.inReplyTo : null,
-        references: p.email === anchor.email ? d0.references : null,
-        lastTouchAt: p.cadence.lastTouchAt,
-      }));
-      const r = await fetch("/api/followups/schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error ?? "Could not schedule follow-ups.");
-      if (d.errors?.length) throw new Error(d.errors.map((e: any) => `${e.email}: ${e.error}`).join("; "));
-      setDone(true);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
+  const [open, setOpen] = useState(false);
   const pill = pillFor(c);
+  const genuine = reply?.reply?.category === "interested";
+  const recTone = pill.tone; // hold | snoozed | nudge
 
   return (
-    <div className="card fu-reply-card">
-      <div className="fu-reply-head">
-        <strong>{c.company}</strong>
-        <span className="meta">{c.role || "application"}</span>
-        <span className={`tag ${pill.tone === "hold" ? "fit-high" : pill.tone === "snoozed" ? "recruiter" : "engineering"}`}>
-          {pill.label}
-        </span>
+    <div className="fu-co fu-co--win">
+      <div className="fu-co-head">
+        <Logo name={c.company} />
+        <div className="fu-co-main">
+          <div className="fu-co-name">{c.company}</div>
+          <div className="fu-co-sum">{c.role || "application"}</div>
+        </div>
+        <span className={`fu-pill ${recTone}`}>{pill.label}</span>
       </div>
-      {reply?.reply && (
-        <>
-          <blockquote className="fu-quote">&ldquo;{reply.reply.snippet.slice(0, 220)}&rdquo;</blockquote>
-          <div className="fu-ai-read">
-            <span className="chip tech">{CATEGORY_LABEL[reply.reply.category]}</span>
-            <span>{reply.reply.summary}</span>
-            {reply.snoozedUntil && <span className="meta">· snoozed until {fmtDate(reply.snoozedUntil)}</span>}
-          </div>
-        </>
-      )}
-      {error && <div className="error-box">{error}</div>}
-      <div className="fu-reply-actions">
-        {done ? (
-          <span className="badge drafted">Scheduled ✓</span>
-        ) : (
+
+      <div className="fu-co-exp" style={{ background: "transparent", borderTop: "none", paddingTop: 0 }}>
+        {reply?.reply && (
+          <>
+            <blockquote className={`fu-quote${genuine ? "" : " fu-quote--flat"}`}>
+              &ldquo;{reply.reply.snippet.slice(0, 220)}&rdquo;
+            </blockquote>
+            <div className="fu-airead">
+              <span className="fu-ai-badge">✦ AI</span>
+              <span className="fu-ai-text">
+                <b>{CATEGORY_LABEL[reply.reply.category]}.</b> {reply.reply.summary}
+              </span>
+              <span className={`fu-ai-rec ${recTone}`}>{pill.label}</span>
+            </div>
+          </>
+        )}
+
+        <div className="fu-co-actions fu-co-actions--reply">
           <button
             type="button"
-            className={c.recommendation === "hold" ? "ghost btn-sm" : "btn-sm"}
-            disabled={busy || quiet.length === 0}
-            onClick={followUpRestAnyway}
+            className={recTone === "hold" ? "ghost btn-sm" : "btn-sm"}
+            disabled={quiet.length === 0}
+            onClick={() => setOpen((v) => !v)}
           >
-            {busy ? <span className="spinner" /> : null}
-            Follow up the rest anyway ({quiet.length})
+            {open ? "Hide" : `Follow up the rest anyway (${quiet.length})`}
           </button>
-        )}
+        </div>
+
+        {open && quiet.length > 0 && <FollowupComposer company={c} quiet={quiet} />}
       </div>
     </div>
   );
@@ -417,13 +432,28 @@ function FollowupsView() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanned, setScanned] = useState(false);
+  const [scannedAt, setScannedAt] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const cancelRef = useRef(false);
 
-  // Scans in BATCHES so a big mailbox never hangs one request. Results + counts
-  // fill in progressively as each batch returns; "Stop" halts after the current
-  // batch. The bounced-address set is computed on the first batch and threaded
-  // back on the rest, so it's only looked up once.
+  // Load the last persisted scan on open — instant, no Gmail/Claude.
+  useEffect(() => {
+    fetch("/api/followups/scan")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.cached) {
+          setCompanies(d.companies ?? []);
+          setCounts(d.counts ?? null);
+          setScannedAt(d.scannedAt ?? null);
+          setScanned(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Fresh scan, in batches so a big mailbox never hangs one request. Results +
+  // counts fill in progressively; "Stop" halts after the current batch. The
+  // bounced set is computed once (first batch) and threaded back on the rest.
   async function scan() {
     cancelRef.current = false;
     setLoading(true);
@@ -431,6 +461,7 @@ function FollowupsView() {
     setScanned(true);
     setCompanies([]);
     setCounts(null);
+    setScannedAt(new Date().toISOString());
     setProgress({ done: 0, total: 0 });
 
     const limit = 8;
@@ -454,7 +485,7 @@ function FollowupsView() {
         acc = [...acc, ...batch];
         const c: Counts = d.counts ?? { companiesApplied: 0, someoneReplied: 0, companiesToNudge: 0, peopleToNudge: 0, bounced: 0 };
         sum = {
-          companiesApplied: d.total ?? sum.companiesApplied, // true total, not accumulated
+          companiesApplied: d.total ?? sum.companiesApplied,
           someoneReplied: sum.someoneReplied + c.someoneReplied,
           companiesToNudge: sum.companiesToNudge + c.companiesToNudge,
           peopleToNudge: sum.peopleToNudge + c.peopleToNudge,
@@ -485,12 +516,8 @@ function FollowupsView() {
       <div className="card">
         <div className="fu-filterbar">
           <div className="cmp-seg" aria-label="Outreach scope">
-            <button type="button" className="on">
-              Applications
-            </button>
-            <button type="button" disabled title="Follow-ups currently cover Applications only.">
-              Campaigns
-            </button>
+            <button type="button" className="on">Applications</button>
+            <button type="button" disabled title="Follow-ups currently cover Applications only.">Campaigns</button>
           </div>
           <button type="button" onClick={scan} disabled={loading}>
             {loading ? <span className="spinner" /> : null}
@@ -501,89 +528,65 @@ function FollowupsView() {
               Stop
             </button>
           )}
-          {progress && (
-            <span className="meta tnum" style={{ marginLeft: "auto" }}>
-              {progress.done}/{progress.total} companies
-            </span>
-          )}
+          <span className="fu-scanmeta">
+            {progress
+              ? `${progress.done}/${progress.total} companies`
+              : scannedAt
+                ? `last scanned ${relTime(scannedAt)}`
+                : ""}
+          </span>
         </div>
         {progress && (
-          <div style={{ height: 4, background: "var(--surface-2)", borderRadius: 999, overflow: "hidden", marginTop: 10 }}>
-            <div
-              style={{
-                height: "100%",
-                width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%`,
-                background: "var(--accent)",
-                transition: "width .2s ease",
-              }}
-            />
+          <div className="fu-progress">
+            <i style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} />
           </div>
         )}
-        <p className="hint" style={{ marginTop: 12 }}>
-          <span className="i">◍</span>
-          Cadence: nudge 1 at +4 business days, nudge 2 at +5, nudge 3 at +6 — max 3, and it stops the moment someone
-          replies. Follow-ups are plain text, no tracking pixel.
-        </p>
+
+        <div className="fu-rulebar">
+          <b>⏱ Cadence</b>
+          <span className="fu-rb-step">+4</span>
+          <span className="fu-rb-sep">→</span>
+          <span className="fu-rb-step">+5</span>
+          <span className="fu-rb-sep">→</span>
+          <span className="fu-rb-step">+6</span>
+          <span>business days · stops the moment someone replies · plain text, no pixel</span>
+        </div>
       </div>
 
       {error && <div className="error-box">{error}</div>}
 
       {counts && (
         <div className="cmp-stats">
-          <div className="cmp-stat">
-            <div className="k">Companies applied</div>
-            <div className="v tnum">{counts.companiesApplied}</div>
-          </div>
-          <div className="cmp-stat accent">
-            <div className="k">Someone replied</div>
-            <div className="v tnum">{counts.someoneReplied}</div>
-          </div>
-          <div className="cmp-stat warn">
-            <div className="k">Companies to nudge</div>
-            <div className="v tnum">{counts.companiesToNudge}</div>
-          </div>
-          <div className="cmp-stat warn">
-            <div className="k">People to nudge</div>
-            <div className="v tnum">{counts.peopleToNudge}</div>
-          </div>
-          <div className="cmp-stat">
-            <div className="k">Bounced</div>
-            <div className="v tnum">{counts.bounced}</div>
-          </div>
+          <div className="cmp-stat"><div className="k">Companies applied</div><div className="v tnum">{counts.companiesApplied}</div></div>
+          <div className="cmp-stat ok"><div className="k">Someone replied</div><div className="v tnum">{counts.someoneReplied}</div></div>
+          <div className="cmp-stat warn"><div className="k">Companies to nudge</div><div className="v tnum">{counts.companiesToNudge}</div></div>
+          <div className="cmp-stat warn"><div className="k">People to nudge</div><div className="v tnum">{counts.peopleToNudge}</div></div>
+          <div className="cmp-stat"><div className="k">Bounced</div><div className="v tnum">{counts.bounced}</div></div>
         </div>
       )}
 
       {!scanned && !loading && !error && (
-        <p className="meta">Scan Gmail to see who replied and who&apos;s due for a follow-up.</p>
+        <p className="meta">Scan Gmail to see who replied and who&apos;s due for a follow-up. The result is saved, so you only scan when you want fresh data.</p>
       )}
 
       {scanned && replied.length > 0 && (
-        <div className="card fu-section">
-          <div className="panel-head-row">
-            <div className="panel-head-main">
-              <div className="panel-head-text">
-                <div className="panel-title">Someone replied · AI read</div>
-                <div className="panel-sub">Non-committal replies first, genuinely interested ones last.</div>
-              </div>
-            </div>
+        <div className="fu-section">
+          <div className="fu-sec-head">
+            <span className="lbl">Someone replied · AI read</span>
+            <span className="n ok">{replied.length}</span>
+            <span className="fu-sec-note">deflections &amp; rejections first</span>
           </div>
-          <div className="fu-reply-list">
-            {sortReplied(replied).map((c) => (
-              <RepliedCompanyCard key={c.companyKey} c={c} />
-            ))}
-          </div>
+          {sortReplied(replied).map((c) => (
+            <RepliedCompanyCard key={c.companyKey} c={c} />
+          ))}
         </div>
       )}
 
       {scanned && due.length > 0 && (
-        <div className="card fu-section">
-          <div className="panel-head-row">
-            <div className="panel-head-main">
-              <div className="panel-head-text">
-                <div className="panel-title">Due for follow-up · oldest first</div>
-                <div className="panel-sub">Quiet is pre-selected. Replied people are skipped automatically.</div>
-              </div>
-            </div>
+        <div className="fu-section">
+          <div className="fu-sec-head">
+            <span className="lbl">Due for follow-up · oldest first</span>
+            <span className="n warn">{due.length}</span>
           </div>
           {due.map((c) => (
             <DueCompanyCard key={c.companyKey} c={c} />
@@ -592,18 +595,15 @@ function FollowupsView() {
       )}
 
       {scanned && recent.length > 0 && (
-        <div className="card fu-section">
-          <div className="panel-head-row">
-            <div className="panel-head-main">
-              <div className="panel-head-text">
-                <div className="panel-title">Applied recently · too soon to nudge</div>
-                <div className="panel-sub">Still inside the cadence window.</div>
-              </div>
-            </div>
+        <div className="fu-section">
+          <div className="fu-sec-head">
+            <span className="lbl">Applied recently · too soon to nudge</span>
+            <span className="n muted">{recent.length}</span>
           </div>
-          <div className="fu-recent-list">
+          <div className="card" style={{ padding: "4px 14px" }}>
             {recent.map((c) => (
               <div key={c.companyKey} className="fu-recent-row">
+                <Logo name={c.company} />
                 <strong>{c.company}</strong>
                 <span className="meta">
                   {c.role || "application"} · applied {fmtDate(c.appliedAt)} · {c.people.length} contacted
@@ -614,8 +614,8 @@ function FollowupsView() {
         </div>
       )}
 
-      {scanned && replied.length === 0 && due.length === 0 && recent.length === 0 && (
-        <p className="meta">No applications logged yet — nothing to follow up on.</p>
+      {scanned && !loading && replied.length === 0 && due.length === 0 && recent.length === 0 && (
+        <p className="meta">No applications to follow up on yet.</p>
       )}
     </>
   );

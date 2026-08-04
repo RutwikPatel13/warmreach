@@ -1907,42 +1907,83 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
    Token-based so both themes work.
    ───────────────────────────────────────────────────────────── */
 
-.fu-filterbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fu-filterbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.fu-scanmeta { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); }
+.fu-progress { height: 4px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin-top: 10px; }
+.fu-progress > i { display: block; height: 100%; background: var(--accent); transition: width 0.2s ease; }
 
-.fu-section { margin-top: 18px; }
-.fu-section .panel-head-row { padding: 4px 4px 0; }
+/* cadence rule bar */
+.fu-rulebar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: var(--accent-soft); color: var(--accent);
+  border-radius: var(--r-md); padding: 9px 13px; font-size: 12.5px; margin: 14px 0 4px;
+}
+.fu-rulebar b { font-weight: 700; }
+.fu-rb-step { font-family: var(--font-mono); font-size: 11.5px; background: color-mix(in srgb, var(--accent) 13%, transparent); padding: 1px 7px; border-radius: 5px; }
+.fu-rb-sep { color: color-mix(in srgb, var(--accent) 45%, transparent); }
 
-/* "Due for follow-up" — expandable company groups */
-.fu-group { margin: 0 0 12px; }
-.fu-co-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fu-section { margin-top: 20px; }
+.fu-sec-head { display: flex; align-items: center; gap: 9px; margin: 0 2px 10px; }
+.fu-sec-head .lbl { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+.fu-sec-head .n { font-family: var(--font-mono); font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.fu-sec-head .n.warn { background: var(--warn-soft); color: var(--warn); }
+.fu-sec-head .n.ok { background: var(--ok-soft); color: var(--ok); }
+.fu-sec-head .n.muted { background: var(--surface-2); color: var(--muted); }
+.fu-sec-note { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+
+/* company card */
+.fu-co { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); margin-bottom: 8px; overflow: hidden; }
+.fu-co--hot { border-color: color-mix(in srgb, var(--warn) 38%, var(--border)); }
+.fu-co--win { border-color: color-mix(in srgb, var(--ok) 38%, var(--border)); }
+.fu-co-head { display: flex; align-items: center; gap: 12px; padding: 13px 15px; }
+.fu-logo { width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 13px; }
+.fu-co-main { flex: 1; min-width: 0; }
+.fu-co-name { font-weight: 660; font-size: 15px; letter-spacing: -0.01em; }
+.fu-co-sum { color: var(--muted); font-size: 12.5px; margin-top: 3px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.fu-co-sum b { color: var(--text); font-weight: 600; }
+.fu-co-sum .sep { color: var(--border-strong); }
+.fu-co-sum .mini { display: inline-flex; align-items: center; gap: 5px; }
+.fu-co-sum .mini i { width: 6px; height: 6px; border-radius: 50%; }
+.fu-co-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.fu-co-actions--reply { margin-top: 12px; }
+.fu-co-exp { border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); padding: 6px 15px 15px; }
+
+/* status pills */
+.fu-pill { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.fu-pill.quiet, .fu-pill.nudge { background: var(--warn-soft); color: var(--warn); }
+.fu-pill.replied, .fu-pill.hold { background: var(--ok-soft); color: var(--ok); }
+.fu-pill.snoozed { background: var(--surface-2); color: var(--muted); }
+.fu-pill.bounced { background: var(--err-soft); color: var(--err); }
+
+/* people rows (checkbox list) */
 .fu-people { display: flex; flex-direction: column; }
-.fu-prow { flex-wrap: wrap; gap: 10px 12px; }
-.fu-prow--muted { opacity: 0.75; cursor: default; }
-.fu-pn { font-weight: 600; }
-.fu-pt { color: var(--muted); font-size: 13px; }
-.fu-editor { margin: 12px 14px 14px; }
+.fu-prow { display: flex; align-items: center; gap: 11px; padding: 8px 2px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.fu-prow:first-child { border-top: none; }
+.fu-prow input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
+.fu-prow--muted { opacity: 0.8; }
+.fu-pn { font-weight: 600; font-size: 13.5px; }
+.fu-pt { color: var(--muted); font-size: 12.5px; }
+.fu-prow .meta { margin-left: auto; }
+
+/* composer */
+.fu-editor { margin-top: 12px; }
 .fu-editor .editor-head { flex-wrap: wrap; row-gap: 8px; }
 .fu-editor .send-btn { margin-top: 4px; }
 
-/* "Someone replied" — AI-read cards */
-.fu-reply-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
-.fu-reply-card { margin-bottom: 0; }
-.fu-reply-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.fu-quote {
-  margin: 10px 0 0; padding: 10px 12px; border-left: 2px solid var(--border-strong);
-  color: var(--muted); font-size: 13.5px; font-style: italic; background: var(--surface-2);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-}
-.fu-ai-read { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 13.5px; }
-.fu-reply-actions { margin-top: 12px; }
+/* reply quote + AI-read bar */
+.fu-quote { margin: 12px 0 0; padding: 10px 13px; border-left: 3px solid var(--ok); background: var(--ok-soft); color: var(--text); font-size: 13.5px; border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.fu-quote--flat { border-left-color: var(--border-strong); background: var(--surface-2); color: var(--muted); font-style: italic; }
+.fu-airead { display: flex; align-items: flex-start; gap: 10px; background: var(--accent-soft); border-radius: var(--r-sm); padding: 10px 12px; margin-top: 10px; }
+.fu-ai-badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); padding: 2px 7px; border-radius: 5px; flex-shrink: 0; margin-top: 1px; }
+.fu-ai-text { flex: 1; min-width: 0; font-size: 13px; color: var(--text); line-height: 1.5; }
+.fu-ai-rec { flex-shrink: 0; font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; border-radius: 999px; white-space: nowrap; margin-top: 1px; }
+.fu-ai-rec.nudge { background: var(--warn-soft); color: var(--warn); }
+.fu-ai-rec.hold { background: var(--ok-soft); color: var(--ok); }
+.fu-ai-rec.snoozed { background: var(--surface-2); color: var(--muted); }
 
-/* "Applied recently" — quiet list, no action needed yet */
-.fu-recent-list { display: flex; flex-direction: column; }
-.fu-recent-row {
-  display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-top: 1px solid var(--border);
-}
+/* "applied recently" */
+.fu-recent-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-top: 1px solid var(--border); }
 .fu-recent-row:first-child { border-top: none; }
+.fu-recent-row .fu-logo { width: 26px; height: 26px; font-size: 11px; border-radius: 7px; }
 
-@media (max-width: 620px) {
-  .fu-prow { flex-wrap: wrap; }
-}
+@media (max-width: 620px) { .fu-prow { gap: 8px 10px; } .fu-airead { flex-wrap: wrap; } }

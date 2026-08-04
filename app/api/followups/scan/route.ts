@@ -6,6 +6,8 @@ import {
   scanFollowups,
   groupApplicationsByCompany,
   findBouncedAddresses,
+  saveScanBatch,
+  readScanResult,
   type CompanyState,
 } from "@/src/followups";
 
@@ -16,6 +18,25 @@ interface Body {
   offset?: number;
   limit?: number;
   bouncedAddresses?: string[]; // passed back by the client after the first batch computed it
+}
+
+// The last persisted scan — so opening /followups shows results instantly
+// without re-scanning. Free (reads a local file, no Gmail/Claude).
+export async function GET(req: Request) {
+  const forbidden = rejectNonLocal(req);
+  if (forbidden) return forbidden;
+  const cached = readScanResult();
+  if (!cached) {
+    return NextResponse.json({ companies: [], counts: countsFor([]), scannedAt: null, complete: false, cached: false });
+  }
+  return NextResponse.json({
+    companies: cached.companies,
+    counts: { ...countsFor(cached.companies), companiesApplied: cached.total },
+    scannedAt: cached.scannedAt,
+    total: cached.total,
+    complete: cached.complete,
+    cached: true,
+  });
 }
 
 // Scans Gmail (retroactively) for replies to logged applications, grouped by
@@ -80,6 +101,10 @@ export async function POST(req: Request) {
 
     const companies = await scanFollowups(auth, from, rows, { offset, limit, bouncedAddresses: bouncedSet });
     const nextOffset = offset + companies.length;
+    const done = nextOffset >= total || companies.length === 0;
+
+    // Persist this batch so the results survive a reload / server restart.
+    saveScanBatch(companies, { reset: offset === 0, complete: done, total });
 
     return NextResponse.json({
       companies,
@@ -87,7 +112,7 @@ export async function POST(req: Request) {
       total,
       offset,
       nextOffset,
-      done: nextOffset >= total || companies.length === 0,
+      done,
       ...(offset === 0 ? { bouncedAddresses: [...bouncedSet] } : {}),
     });
   } catch (e: any) {
