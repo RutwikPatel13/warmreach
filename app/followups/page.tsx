@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Shell from "../_components/Shell";
+import ScheduleMenu from "../_components/ScheduleMenu";
 
 type Tone = "gentle" | "direct" | "add_value";
 type ReplyCategory = "interested" | "auto_ack" | "out_of_office" | "deflection" | "rejection" | "other";
@@ -221,6 +222,7 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
+  const [sentMode, setSentMode] = useState<"now" | "scheduled">("scheduled");
 
   const toggle = (email: string) =>
     setSelected((s) => {
@@ -229,7 +231,7 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
       return n;
     });
 
-  async function send() {
+  async function run(sendNow: boolean, startAt?: string) {
     if (!draft || selected.size === 0) return;
     setSending(true);
     setSendError(null);
@@ -252,11 +254,12 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
       const r = await fetch("/api/followups/schedule", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ items, sendNow, startAt }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error ?? "Could not schedule follow-ups.");
+      if (!r.ok) throw new Error(d.error ?? "Could not send follow-ups.");
       if (d.errors?.length) throw new Error(d.errors.map((e: any) => `${e.email}: ${e.error}`).join("; "));
+      setSentMode(sendNow ? "now" : "scheduled");
       setSent(true);
     } catch (e: any) {
       setSendError(e.message);
@@ -338,12 +341,21 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
             </p>
             {sendError && <div className="error-box">{sendError}</div>}
             {sent ? (
-              <span className="badge drafted">Scheduled ✓</span>
+              <span className="badge drafted">
+                {sentMode === "now" ? `Sent ${selected.size} ✓` : `Scheduled ${selected.size} ✓`}
+              </span>
             ) : (
-              <button type="button" className="send-btn" disabled={sending || selected.size === 0} onClick={send}>
-                {sending ? <span className="spinner" /> : null}
-                Send {selected.size} / Schedule
-              </button>
+              <div className="send-split">
+                <button type="button" className="send-btn" disabled={sending || selected.size === 0} onClick={() => run(true)}>
+                  {sending ? <span className="spinner" /> : null}
+                  Send {selected.size} now
+                </button>
+                <ScheduleMenu
+                  label={`Schedule (${selected.size})`}
+                  disabled={sending || selected.size === 0}
+                  onSchedule={(iso) => run(false, iso)}
+                />
+              </div>
             )}
           </>
         )}

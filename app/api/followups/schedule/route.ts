@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { rejectNonLocal } from "@/src/localGuard";
-import { getGmailAuth, getFromAddress, hasGmailToken, createDraft } from "@/src/gmail";
+import { getGmailAuth, getFromAddress, hasGmailToken, createDraft, sendDraft } from "@/src/gmail";
 import { addScheduledMany, listScheduled, startScheduler, type ScheduleItem } from "@/src/scheduler";
 import { appendFollowupLog, findThreadForPerson, type FollowupLogEntry, type FollowupTone } from "@/src/followups";
 import { normCompany } from "@/src/tracker";
@@ -24,8 +24,9 @@ interface ScheduleFollowupItem {
 
 interface Body {
   items?: ScheduleFollowupItem[];
+  sendNow?: boolean; // true = create the drafts and SEND them immediately (no queue)
   perDay?: number;
-  startAt?: string; // ISO instant for the first send
+  startAt?: string; // ISO instant for the first send (scheduled mode)
   windowStartHour?: number;
   windowEndHour?: number;
 }
@@ -46,8 +47,9 @@ export async function POST(req: Request) {
 
   const body = (await req.json().catch(() => ({}))) as Body;
   const items = (body.items ?? []).filter((i) => i?.email && i?.company && i?.subject && i?.body);
+  const sendNow = body.sendNow === true;
   if (items.length === 0) {
-    return NextResponse.json({ error: "No follow-ups to schedule." }, { status: 400 });
+    return NextResponse.json({ error: "No follow-ups to send." }, { status: 400 });
   }
   if (!hasGmailToken()) {
     return NextResponse.json(
@@ -125,17 +127,21 @@ export async function POST(req: Request) {
         from,
       );
 
-      const slotIndex = created.length; // drip position among successfully-drafted items only
-      const day = Math.floor(slotIndex / perDay);
-      const slot = slotIndex % perDay;
-      const dayStart = new Date(start);
-      dayStart.setDate(dayStart.getDate() + day);
-      dayStart.setHours(wStart, 0, 0, 0);
-      const offset = perDay > 1 ? Math.round((slot * windowLen) / perDay) : 0;
-      let at = dayStart.getTime() + offset;
-      if (day === 0) at = Math.max(at, start.getTime());
-      at = Math.max(at, floor);
-      const sendAt = new Date(at).toISOString();
+      if (sendNow) {
+        await sendDraft(auth, draftId); // send immediately (throws -> recorded as an error below)
+      } else {
+        const slotIndex = scheduleEntries.length; // drip position among successfully-queued items
+        const day = Math.floor(slotIndex / perDay);
+        const slot = slotIndex % perDay;
+        const dayStart = new Date(start);
+        dayStart.setDate(dayStart.getDate() + day);
+        dayStart.setHours(wStart, 0, 0, 0);
+        const off = perDay > 1 ? Math.round((slot * windowLen) / perDay) : 0;
+        let at = dayStart.getTime() + off;
+        if (day === 0) at = Math.max(at, start.getTime());
+        at = Math.max(at, floor);
+        scheduleEntries.push({ item: { draftId, to: it.email, name: it.name, subject: it.subject }, sendAt: new Date(at).toISOString() });
+      }
 
       created.push({
         id: `fu_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -149,7 +155,6 @@ export async function POST(req: Request) {
         subject: it.subject,
         sentAt: now,
       });
-      scheduleEntries.push({ item: { draftId, to: it.email, name: it.name, subject: it.subject }, sendAt });
     } catch (e: any) {
       errors.push({ email: it.email, error: e?.message ?? "Failed to draft follow-up." });
     }
@@ -157,11 +162,13 @@ export async function POST(req: Request) {
 
   if (created.length > 0) {
     appendFollowupLog(created);
-    startScheduler();
-    addScheduledMany(scheduleEntries);
+    if (!sendNow) {
+      startScheduler();
+      addScheduledMany(scheduleEntries);
+    }
   }
 
-  return NextResponse.json({ created, errors, scheduled: listScheduled() });
+  return NextResponse.json({ created, errors, scheduled: listScheduled(), sent: sendNow ? created.length : 0 });
 }
 
 function clampHour(h: number | undefined, dflt: number): number {
