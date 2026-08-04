@@ -102,6 +102,12 @@ function relTime(iso: string | null): string {
 function firstName(name: string): string {
   return (name || "").trim().split(/\s+/)[0] || "there";
 }
+function ordinal(n: number): string {
+  return n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`;
+}
+function bdays(n: number): string {
+  return `${n} business day${n === 1 ? "" : "s"}`;
+}
 function tint(name: string): string {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
@@ -338,11 +344,14 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
             <span className="fu-pn">{p.name || p.email}</span>
             <span className="fu-pt">{p.title}</span>
             <span className="meta">
+              {`Reached out ${fmtDate(p.lastTouchAt)} · `}
               {p.cadence.due
-                ? `due · nudge ${p.cadence.nextNudgeNumber} · ${p.cadence.businessDaysSince}bd`
+                ? `due for ${ordinal(p.cadence.nextNudgeNumber ?? 1)} nudge (no reply in ${bdays(p.cadence.businessDaysSince)})`
                 : p.cadence.exhausted
                   ? "max follow-ups reached"
-                  : `${p.cadence.businessDaysSince}/${p.cadence.threshold ?? "-"}bd`}
+                  : `${ordinal(p.cadence.nextNudgeNumber ?? 1)} nudge in ${bdays(
+                      Math.max(0, (p.cadence.threshold ?? 0) - p.cadence.businessDaysSince),
+                    )}`}
             </span>
           </label>
         ))}
