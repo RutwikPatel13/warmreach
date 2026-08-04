@@ -153,6 +153,41 @@ function Logo({ name, people }: { name: string; people: { email: string }[] }) {
   );
 }
 
+// Dismiss ("don't follow up here") a company — persisted server-side so it stays
+// out of future scans; shows an Undo strip in the meantime.
+function useDismiss(companyKey: string) {
+  const [dismissed, setDismissed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  async function set(v: boolean) {
+    setBusy(true);
+    try {
+      await fetch("/api/followups/dismiss", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyKey, dismissed: v }),
+      });
+      setDismissed(v);
+    } catch {
+      /* ignore — dismiss is best-effort */
+    } finally {
+      setBusy(false);
+    }
+  }
+  return { dismissed, busy, skip: () => set(true), undo: () => set(false) };
+}
+function DismissedStrip({ company, onUndo, busy }: { company: string; onUndo: () => void; busy: boolean }) {
+  return (
+    <div className="fu-co" style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 15px" }}>
+      <span className="meta">
+        Dismissed <b style={{ color: "var(--text)" }}>{company}</b> — won&apos;t show on future scans.
+      </span>
+      <button type="button" className="ghost btn-sm" style={{ marginLeft: "auto" }} disabled={busy} onClick={onUndo}>
+        Undo
+      </button>
+    </div>
+  );
+}
+
 // Replied companies: non-committal replies (deflection/rejection/auto_ack/OOO)
 // first, genuinely "interested" ones last.
 function sortReplied(companies: CompanyState[]): CompanyState[] {
@@ -223,6 +258,8 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
   const [sendError, setSendError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const [sentMode, setSentMode] = useState<"now" | "scheduled">("scheduled");
+  const [createdIds, setCreatedIds] = useState<string[]>([]);
+  const [canceling, setCanceling] = useState(false);
 
   const toggle = (email: string) =>
     setSelected((s) => {
@@ -259,12 +296,34 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Could not send follow-ups.");
       if (d.errors?.length) throw new Error(d.errors.map((e: any) => `${e.email}: ${e.error}`).join("; "));
+      setCreatedIds(Array.isArray(d.created) ? d.created.map((x: any) => x.draftId).filter(Boolean) : []);
       setSentMode(sendNow ? "now" : "scheduled");
       setSent(true);
     } catch (e: any) {
       setSendError(e.message);
     } finally {
       setSending(false);
+    }
+  }
+
+  // Undo a scheduled batch: cancel the queued sends + delete the drafts.
+  async function cancel() {
+    if (createdIds.length === 0) return;
+    setCanceling(true);
+    setSendError(null);
+    try {
+      const r = await fetch("/api/followups/schedule", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draftIds: createdIds }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Could not cancel.");
+      setSent(false);
+      setCreatedIds([]);
+    } catch (e: any) {
+      setSendError(e.message);
+    } finally {
+      setCanceling(false);
     }
   }
 
@@ -341,20 +400,32 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
             </p>
             {sendError && <div className="error-box">{sendError}</div>}
             {sent ? (
-              <span className="badge drafted">
-                {sentMode === "now" ? `Sent ${selected.size} ✓` : `Scheduled ${selected.size} ✓`}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="badge drafted">
+                  {sentMode === "now" ? `Sent ${selected.size} ✓` : `Scheduled ${selected.size} ✓`}
+                </span>
+                {sentMode === "scheduled" && createdIds.length > 0 && (
+                  <button type="button" className="ghost btn-sm" disabled={canceling} onClick={cancel}>
+                    {canceling ? "Canceling…" : "Undo"}
+                  </button>
+                )}
+              </div>
             ) : (
-              <div className="send-split">
-                <button type="button" className="send-btn" disabled={sending || selected.size === 0} onClick={() => run(true)}>
-                  {sending ? <span className="spinner" /> : null}
-                  Send {selected.size} now
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div className="send-split">
+                  <button type="button" className="send-btn" disabled={sending || selected.size === 0} onClick={() => run(true)}>
+                    {sending ? <span className="spinner" /> : null}
+                    Send {selected.size} now
+                  </button>
+                  <ScheduleMenu
+                    label={`Schedule (${selected.size})`}
+                    disabled={sending || selected.size === 0}
+                    onSchedule={(iso) => run(false, iso)}
+                  />
+                </div>
+                <button type="button" className="ghost btn-sm" disabled={sending} onClick={() => setDraft(null)}>
+                  Discard
                 </button>
-                <ScheduleMenu
-                  label={`Schedule (${selected.size})`}
-                  disabled={sending || selected.size === 0}
-                  onSchedule={(iso) => run(false, iso)}
-                />
               </div>
             )}
           </>
@@ -370,6 +441,9 @@ function DueCompanyCard({ c }: { c: CompanyState }) {
   const [open, setOpen] = useState(false);
   const quiet = c.people.filter((p) => p.status === "quiet" && !p.snoozedUntil);
   const bounced = c.people.filter((p) => p.status === "bounced");
+  const dm = useDismiss(c.companyKey);
+
+  if (dm.dismissed) return <DismissedStrip company={c.company} onUndo={dm.undo} busy={dm.busy} />;
 
   return (
     <div className="fu-co fu-co--hot">
@@ -392,9 +466,14 @@ function DueCompanyCard({ c }: { c: CompanyState }) {
           </div>
         </div>
         <span className="fu-pill quiet">{c.dueCount} to nudge</span>
-        <button type="button" className="ghost btn-sm" onClick={() => setOpen((v) => !v)}>
-          {open ? "Hide" : `Show ${c.people.length}`}
-        </button>
+        <div className="fu-co-actions">
+          <button type="button" className="ghost btn-sm" onClick={() => setOpen((v) => !v)}>
+            {open ? "Hide" : `Show ${c.people.length}`}
+          </button>
+          <button type="button" className="ghost btn-sm" title="Don't follow up at this company" disabled={dm.busy} onClick={dm.skip}>
+            Skip
+          </button>
+        </div>
       </div>
 
       {open && (
@@ -428,6 +507,9 @@ function RepliedCompanyCard({ c }: { c: CompanyState }) {
   const pill = pillFor(c);
   const genuine = reply?.reply?.category === "interested";
   const recTone = pill.tone; // hold | snoozed | nudge
+  const dm = useDismiss(c.companyKey);
+
+  if (dm.dismissed) return <DismissedStrip company={c.company} onUndo={dm.undo} busy={dm.busy} />;
 
   return (
     <div className="fu-co fu-co--win">
@@ -438,6 +520,9 @@ function RepliedCompanyCard({ c }: { c: CompanyState }) {
           <div className="fu-co-sum">{c.role || "application"}</div>
         </div>
         <span className={`fu-pill ${recTone}`}>{pill.label}</span>
+        <button type="button" className="ghost btn-sm" title="Don't follow up at this company" disabled={dm.busy} onClick={dm.skip}>
+          Skip
+        </button>
       </div>
 
       <div className="fu-co-exp" style={{ background: "transparent", borderTop: "none", paddingTop: 0 }}>

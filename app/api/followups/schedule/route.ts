@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { rejectNonLocal } from "@/src/localGuard";
-import { getGmailAuth, getFromAddress, hasGmailToken, createDraft, sendDraft } from "@/src/gmail";
-import { addScheduledMany, listScheduled, startScheduler, type ScheduleItem } from "@/src/scheduler";
-import { appendFollowupLog, findThreadForPerson, type FollowupLogEntry, type FollowupTone } from "@/src/followups";
+import { getGmailAuth, getFromAddress, hasGmailToken, createDraft, sendDraft, deleteDraft } from "@/src/gmail";
+import { addScheduledMany, listScheduled, startScheduler, cancelByDraftIds, type ScheduleItem } from "@/src/scheduler";
+import {
+  appendFollowupLog,
+  removeFollowupLogByDraftIds,
+  findThreadForPerson,
+  type FollowupLogEntry,
+  type FollowupTone,
+} from "@/src/followups";
 import { normCompany } from "@/src/tracker";
 
 export const runtime = "nodejs";
@@ -174,4 +180,39 @@ export async function POST(req: Request) {
 function clampHour(h: number | undefined, dflt: number): number {
   if (typeof h !== "number" || Number.isNaN(h)) return dflt;
   return Math.max(0, Math.min(23, Math.floor(h)));
+}
+
+// Cancel scheduled follow-ups by their draft ids: drop them from the send queue,
+// delete the Gmail drafts, and remove their follow-up-log entries so those
+// people can be nudged again later. (Already-sent follow-ups can't be undone.)
+export async function DELETE(req: Request) {
+  const forbidden = rejectNonLocal(req);
+  if (forbidden) return forbidden;
+
+  const { draftIds } = (await req.json().catch(() => ({}))) as { draftIds?: string[] };
+  if (!Array.isArray(draftIds) || draftIds.length === 0) {
+    return NextResponse.json({ error: "draftIds is required." }, { status: 400 });
+  }
+
+  const canceled = cancelByDraftIds(draftIds); // remove from the scheduler queue
+  removeFollowupLogByDraftIds(draftIds); // let the cadence nudge them again later
+
+  let deleted = 0;
+  if (hasGmailToken()) {
+    try {
+      const auth = await getGmailAuth();
+      for (const id of draftIds) {
+        try {
+          await deleteDraft(auth, id);
+          deleted++;
+        } catch {
+          /* draft already sent/deleted — nothing to remove */
+        }
+      }
+    } catch {
+      /* auth issue — the queue is already cleared, which is the important part */
+    }
+  }
+
+  return NextResponse.json({ canceled, deleted });
 }

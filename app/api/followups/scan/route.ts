@@ -4,10 +4,11 @@ import { getGmailAuth, getFromAddress, hasGmailToken } from "@/src/gmail";
 import { outreachRows } from "@/src/tracker";
 import {
   scanFollowups,
-  groupApplicationsByCompany,
+  activeCompanyGroups,
   findBouncedAddresses,
   saveScanBatch,
   readScanResult,
+  readDismissed,
   type CompanyState,
 } from "@/src/followups";
 
@@ -29,9 +30,11 @@ export async function GET(req: Request) {
   if (!cached) {
     return NextResponse.json({ companies: [], counts: countsFor([]), scannedAt: null, complete: false, cached: false });
   }
+  const dismissed = new Set(readDismissed());
+  const active = cached.companies.filter((c) => !dismissed.has(c.companyKey));
   return NextResponse.json({
-    companies: cached.companies,
-    counts: { ...countsFor(cached.companies), companiesApplied: cached.total },
+    companies: active,
+    counts: { ...countsFor(active), companiesApplied: cached.total },
     scannedAt: cached.scannedAt,
     total: cached.total,
     complete: cached.complete,
@@ -59,7 +62,7 @@ export async function POST(req: Request) {
 
   const body = (await req.json().catch(() => ({}))) as Body;
   const rows = outreachRows().filter((r) => r.role !== "campaign");
-  const total = groupApplicationsByCompany(rows).length;
+  const total = activeCompanyGroups(rows).length;
   if (total === 0) {
     return NextResponse.json({ companies: [], counts: countsFor([]), total: 0, offset: 0, nextOffset: 0, done: true });
   }

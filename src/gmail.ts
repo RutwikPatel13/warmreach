@@ -205,6 +205,12 @@ export async function sendDraft(auth: any, draftId: string): Promise<string> {
   return res.data.id ?? "(unknown id)";
 }
 
+// Deletes a draft (used to undo a scheduled follow-up before it sends).
+export async function deleteDraft(auth: any, draftId: string): Promise<void> {
+  const gmail = google.gmail({ version: "v1", auth });
+  await gmail.users.drafts.delete({ userId: "me", id: draftId });
+}
+
 // `npm run gmail:auth` -> pre-authorize once (opens a browser).
 if (import.meta.url === `file://${process.argv[1]}`) {
   authorizeInteractive()

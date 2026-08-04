@@ -100,6 +100,34 @@ export function groupApplicationsByCompany(rows: OutreachRow[]): CompanyGroup[] 
   return groups.sort((a, b) => Date.parse(a.appliedAt) - Date.parse(b.appliedAt));
 }
 
+// ── Dismissed companies — "don't follow up here". Persisted under data/
+// (gitignored); excluded from scans and the cached result. ───────────────────
+const DISMISSED = path.resolve("data/followups_dismissed.json");
+export function readDismissed(): string[] {
+  try {
+    const p = JSON.parse(fs.readFileSync(DISMISSED, "utf8"));
+    return Array.isArray(p) ? p : [];
+  } catch {
+    return [];
+  }
+}
+export function setDismissed(companyKey: string, dismissed: boolean): void {
+  const set = new Set(readDismissed());
+  if (dismissed) set.add(companyKey);
+  else set.delete(companyKey);
+  try {
+    fs.mkdirSync(path.dirname(DISMISSED), { recursive: true });
+    fs.writeFileSync(DISMISSED, JSON.stringify([...set], null, 2));
+  } catch {
+    /* ignore — dismiss is best-effort */
+  }
+}
+// Application companies minus the ones the user dismissed.
+export function activeCompanyGroups(rows: OutreachRow[]): CompanyGroup[] {
+  const dismissed = new Set(readDismissed());
+  return groupApplicationsByCompany(rows).filter((g) => !dismissed.has(g.companyKey));
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Cadence: business-day math + the follow-up log (separate from the outreach
 // log, so scheduling a nudge never shows up as a new "application").
@@ -139,6 +167,15 @@ function writeFollowupLog(list: FollowupLogEntry[]): void {
 export function appendFollowupLog(entries: FollowupLogEntry[]): void {
   if (entries.length === 0) return;
   writeFollowupLog([...readFollowupLog(), ...entries]);
+}
+// Drop log entries by draft id — used when a scheduled follow-up is canceled, so
+// the cadence lets that person be nudged again later.
+export function removeFollowupLogByDraftIds(draftIds: string[]): number {
+  const set = new Set(draftIds);
+  const cur = readFollowupLog();
+  const next = cur.filter((f) => !set.has(f.draftId));
+  if (next.length !== cur.length) writeFollowupLog(next);
+  return cur.length - next.length;
 }
 // Follow-ups already sent/queued to this person at this company, oldest first.
 export function followupsFor(email: string, companyKey: string): FollowupLogEntry[] {
@@ -634,7 +671,7 @@ export async function scanFollowups(
   const offset = opts.offset ?? 0;
   const limit = opts.limit ?? 300;
   const bounced = opts.bouncedAddresses ?? new Set<string>();
-  const groups = groupApplicationsByCompany(rows).slice(offset, offset + limit);
+  const groups = activeCompanyGroups(rows).slice(offset, offset + limit);
 
   const companies: CompanyState[] = [];
   for (const g of groups) {
