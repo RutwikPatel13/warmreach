@@ -1959,6 +1959,7 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 .fu-pill.bounced { background: var(--err-soft); color: var(--err); }
 
 /* people rows (checkbox list) */
+.fu-people-summary { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); padding: 2px 2px 8px; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
 .fu-people { display: flex; flex-direction: column; }
 .fu-prow { display: flex; align-items: center; gap: 11px; padding: 8px 2px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .fu-prow:first-child { border-top: none; }

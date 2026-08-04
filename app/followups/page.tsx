@@ -108,6 +108,23 @@ function ordinal(n: number): string {
 function bdays(n: number): string {
   return `${n} business day${n === 1 ? "" : "s"}`;
 }
+// One-line summary for the composer's people list — a company's contacts were
+// reached out together and share a cadence, so show it once, not on every row.
+function peopleSummary(quiet: PersonState[], anchor: PersonState | undefined): string {
+  if (quiet.length === 0) return "";
+  const times = quiet.map((p) => Date.parse(p.lastTouchAt)).filter((t) => !Number.isNaN(t));
+  const minIso = times.length ? new Date(Math.min(...times)).toISOString() : null;
+  const maxIso = times.length ? new Date(Math.max(...times)).toISOString() : null;
+  const date = !minIso
+    ? "an earlier date"
+    : fmtDate(minIso) === fmtDate(maxIso!)
+      ? fmtDate(minIso)
+      : `${fmtDate(minIso)} – ${fmtDate(maxIso!)}`;
+  const n = anchor?.cadence.nextNudgeNumber ?? 1;
+  const bd = anchor?.cadence.businessDaysSince ?? 0;
+  const who = `${quiet.length} ${quiet.length === 1 ? "person" : "people"}`;
+  return `Reached out ${date} · ${who} · due for ${ordinal(n)} nudge (no reply in ${bdays(bd)})`;
+}
 function tint(name: string): string {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
@@ -337,22 +354,13 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
 
   return (
     <>
+      <div className="fu-people-summary">{peopleSummary(quiet, anchor)}</div>
       <div className="fu-people">
         {quiet.map((p) => (
           <label key={p.email} className="fu-prow">
             <input type="checkbox" checked={selected.has(p.email)} onChange={() => toggle(p.email)} />
             <span className="fu-pn">{p.name || p.email}</span>
             <span className="fu-pt">{p.title}</span>
-            <span className="meta">
-              {`Reached out ${fmtDate(p.lastTouchAt)} · `}
-              {p.cadence.due
-                ? `due for ${ordinal(p.cadence.nextNudgeNumber ?? 1)} nudge (no reply in ${bdays(p.cadence.businessDaysSince)})`
-                : p.cadence.exhausted
-                  ? "max follow-ups reached"
-                  : `${ordinal(p.cadence.nextNudgeNumber ?? 1)} nudge in ${bdays(
-                      Math.max(0, (p.cadence.threshold ?? 0) - p.cadence.businessDaysSince),
-                    )}`}
-            </span>
           </label>
         ))}
       </div>
