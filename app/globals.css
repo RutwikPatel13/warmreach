@@ -1932,7 +1932,9 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 .fu-sec-note { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
 
 /* company card */
-.fu-co { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); margin-bottom: 8px; overflow: hidden; }
+/* No overflow:hidden here — it would clip the Schedule-send popover. The
+   expanded section rounds its own bottom corners (below) to keep the card clean. */
+.fu-co { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); margin-bottom: 8px; }
 .fu-co--hot { border-color: color-mix(in srgb, var(--warn) 38%, var(--border)); }
 .fu-co--win { border-color: color-mix(in srgb, var(--ok) 38%, var(--border)); }
 .fu-co-head { display: flex; align-items: center; gap: 12px; padding: 13px 15px; }
@@ -1947,7 +1949,7 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 .fu-co-sum .mini i { width: 6px; height: 6px; border-radius: 50%; }
 .fu-co-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .fu-co-actions--reply { margin-top: 12px; }
-.fu-co-exp { border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); padding: 6px 15px 15px; }
+.fu-co-exp { border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface-2) 55%, var(--surface)); padding: 6px 15px 15px; border-radius: 0 0 var(--r-md) var(--r-md); }
 
 /* status pills */
 .fu-pill { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
