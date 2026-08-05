@@ -1,0 +1,74 @@
+name: Alert on direct push to main
+
+# There's no branch protection on this repo (private repo on a free plan), so a
+# collaborator with write access can push straight to main. This won't stop it —
+# it just makes sure it never happens quietly. An issue gets opened and assigned
+# to the owner, which sends the usual notification email.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  alert:
+    # The owner pushing to main is the expected case. Only speak up for anyone else.
+    if: github.actor != github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { actor, sha, payload } = context;
+            const short = sha.slice(0, 7);
+            const forced = payload.forced === true;
+
+            const commits = (payload.commits ?? []).map(
+              (c) => `- \`${c.id.slice(0, 7)}\` ${c.message.split("\n")[0]} — ${c.author.name}`
+            );
+
+            const lines = [
+              `@${actor} pushed directly to \`main\`${forced ? " with `--force`" : ""}.`,
+              "",
+              `- **Who:** @${actor}`,
+              `- **Head:** ${short}`,
+              `- **Before:** \`${payload.before ?? "unknown"}\``,
+              `- **Force-push:** ${forced ? "**yes**" : "no"}`,
+              `- **Run:** ${payload.compare ?? ""}`,
+              "",
+              commits.length ? "**Commits**" : "_No commit list in the payload._",
+              ...commits,
+            ];
+
+            if (forced) {
+              lines.push(
+                "",
+                "---",
+                "",
+                "⚠️ **This was a force-push, so commits may have been rewritten or dropped.**",
+                "If anything is missing, recover from a local clone that still has the old history:",
+                "",
+                "```bash",
+                "git reflog                       # find the commit you expect",
+                `git push --force-with-lease origin <good-sha>:main`,
+                "```"
+              );
+            }
+
+            lines.push(
+              "",
+              "See [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) for the branch-and-PR convention.",
+              "Close this once you've looked at it."
+            );
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title: `Direct push to main by @${actor} (${short})${forced ? " — force-push" : ""}`,
+              body: lines.join("\n"),
+              assignees: [owner],
+            });

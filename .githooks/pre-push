@@ -1,0 +1,41 @@
+#!/bin/sh
+# Refuses pushes that would land directly on main.
+#
+# Enable once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# Git doesn't install hooks on clone, so this is opt-in by design. It guards
+# against the accidental push — wrong branch checked out, a rebase that ran
+# longer than expected — not against a deliberate one. `--no-verify` still goes
+# through, and that's the point: the override should be easy, explicit, and
+# visible in your shell history rather than something you disable and forget.
+
+protected="main"
+empty="0000000000000000000000000000000000000000"
+
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	[ "$remote_ref" = "refs/heads/$protected" ] || continue
+
+	if [ "$local_sha" = "$empty" ]; then
+		echo "blocked: refusing to delete '$protected' on the remote." >&2
+	else
+		echo "blocked: refusing to push directly to '$protected'." >&2
+	fi
+
+	cat >&2 <<EOF
+
+  Put it on a branch and open a pull request:
+
+      git switch -c your-branch-name
+      git push -u origin your-branch-name
+
+  If you genuinely mean to push to $protected, say so explicitly:
+
+      git push --no-verify
+
+EOF
+	exit 1
+done
+
+exit 0
