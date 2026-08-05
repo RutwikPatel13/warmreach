@@ -60,6 +60,8 @@ interface DraftArgs {
   to: string;
   subject: string;
   body: string;
+  cc?: string;
+  bcc?: string;
   attachmentPath?: string;
   // Reply on an existing thread (e.g. a follow-up) instead of starting a new
   // one: threadId ties the draft to it, In-Reply-To/References are the
@@ -122,6 +124,10 @@ function buildRaw(from: string, args: DraftArgs): string {
   const headers = [
     `From: ${from}`,
     `To: ${args.to}`,
+    // Only the compose dock sets these; every other caller omits them, so the
+    // headers vanish and the message is byte-identical to before.
+    ...(args.cc ? [`Cc: ${args.cc}`] : []),
+    ...(args.bcc ? [`Bcc: ${args.bcc}`] : []),
     `Subject: ${encodeHeader(stripBold(args.subject))}`, // subjects can't be bold
     ...(args.inReplyTo ? [`In-Reply-To: ${args.inReplyTo}`] : []),
     ...(args.references ? [`References: ${args.references}`] : []),
