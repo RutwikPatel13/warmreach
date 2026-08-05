@@ -127,6 +127,44 @@ function looksLikeDomain(input: string): boolean {
   return /\.[a-z]{2,}$/i.test(input) && !input.includes(" ");
 }
 
+// Derive a searchable name from a LinkedIn profile URL. LinkedIn slugs are
+// usually "first-last" (with a trailing unique suffix like "-a1b2c3" or "-08" on
+// collisions) — strip the suffix, then separators → spaces so the name can be fed
+// to Apollo's free keyword search. Apollo only matches names token-by-token, so a
+// bare concatenated slug like "deepshah08" can't be split and won't match — the
+// caller should fall back to prompting for the typed name. Returns null if no /in/.
+export function nameFromLinkedin(url: string): string | null {
+  const m = url.match(/\/in\/([^/?#]+)/i);
+  if (!m) return null;
+  const slug = decodeURIComponent(m[1])
+    .replace(/-[0-9a-f]{6,}$/i, "") // long hex/alnum collision suffix
+    .replace(/-\d+$/, "") // short numeric suffix, e.g. "-08"
+    .replace(/[._-]+/g, " ") // dots / underscores / dashes → spaces
+    .replace(/\d+$/, "") // trailing digits on a bare slug: "deepshah08" → "deepshah"
+    .replace(/\s+/g, " ")
+    .trim();
+  return slug || null;
+}
+
+// Whether a derived name is actually searchable — Apollo matches on name tokens,
+// so a single jammed-together token (e.g. "deepshah") can't resolve. Used to give
+// the user an honest "type the name instead" nudge rather than empty results.
+export function isSearchableName(name: string | null): boolean {
+  return !!name && /\s/.test(name.trim());
+}
+
+// Normalize a LinkedIn URL for equality checks (scheme/host/trailing-slash/query
+// insensitive), so we can float an exact-URL match to the top of name results.
+function normLinkedin(url?: string | null): string {
+  if (!url) return "";
+  return url
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .split(/[?#]/)[0]
+    .replace(/\/+$/, "");
+}
+
 // How well an org name matches the query: exact > prefix > whole-word > none.
 function nameMatchScore(name: string, query: string): number {
   const n = (name ?? "").toLowerCase().trim();
@@ -196,6 +234,65 @@ export interface SearchResult {
   location?: string | null;
 }
 
+// Shape one Apollo people-search hit into our SearchResult. Shared by the
+// company-team browse (searchContacts) and the by-name finder (findPeople).
+function toSearchResult(p: any): SearchResult {
+  return {
+    id: p.id,
+    first_name: p.first_name,
+    last_name: p.last_name ?? null,
+    title: p.title,
+    has_email: p.has_email ?? false,
+    seniority: p.seniority ?? null,
+    linkedin: p.linkedin_url ?? null,
+    photo: p.photo_url ?? null,
+    location: [p.city, p.state, p.country].filter(Boolean).join(", ") || null,
+  };
+}
+
+// Find a SPECIFIC person by name (and/or LinkedIn URL), optionally scoped to a
+// company. Uses the same FREE people-search endpoint as searchContacts — no
+// credit is spent here; revealing the email (enrichPerson) still costs 1. When a
+// LinkedIn URL is given, an exact-URL match is floated to the top of the results.
+export async function findPeople(opts: {
+  name?: string;
+  linkedinUrl?: string;
+  company?: Company;
+  limit?: number;
+}): Promise<SearchResult[]> {
+  const limit = Math.min(Math.max(opts.limit ?? 25, 1), 100);
+  const keywords = (opts.name?.trim() || (opts.linkedinUrl ? nameFromLinkedin(opts.linkedinUrl) : null) || "").trim();
+  if (!keywords) throw new Error("A person's name or LinkedIn URL is required.");
+
+  const c = opts.company;
+  const orgFilter: Record<string, unknown> = c?.orgId
+    ? { organization_ids: [c.orgId] }
+    : c?.domain
+      ? { q_organization_domains_list: [c.domain] }
+      : {};
+
+  const data = await post("/mixed_people/api_search", {
+    q_keywords: keywords,
+    page: 1,
+    per_page: limit,
+    ...orgFilter,
+  });
+
+  const out: SearchResult[] = [];
+  const seen = new Set<string>();
+  for (const p of data.people ?? []) {
+    if (!p.id || seen.has(p.id)) continue;
+    seen.add(p.id);
+    out.push(toSearchResult(p));
+  }
+
+  if (opts.linkedinUrl) {
+    const target = normLinkedin(opts.linkedinUrl);
+    out.sort((a, b) => (normLinkedin(b.linkedin) === target ? 1 : 0) - (normLinkedin(a.linkedin) === target ? 1 : 0));
+  }
+  return out.slice(0, limit);
+}
+
 // Paginates Apollo people-search (free) up to `limit`, so big companies aren't
 // truncated to a single page. Safety-bounded by limit (default 500).
 export async function searchContacts(
@@ -232,17 +329,7 @@ export async function searchContacts(
     for (const p of people) {
       if (!p.id || seen.has(p.id)) continue;
       seen.add(p.id);
-      out.push({
-        id: p.id,
-        first_name: p.first_name,
-        last_name: p.last_name ?? null,
-        title: p.title,
-        has_email: p.has_email ?? false,
-        seniority: p.seniority ?? null,
-        linkedin: p.linkedin_url ?? null,
-        photo: p.photo_url ?? null,
-        location: [p.city, p.state, p.country].filter(Boolean).join(", ") || null,
-      });
+      out.push(toSearchResult(p));
     }
     if (people.length < 100) break; // reached the last page
   }
@@ -375,13 +462,8 @@ export async function companyJobPostings(orgId: string, limit = 40): Promise<Job
   }));
 }
 
-// Costs 1 Apollo credit per matched person. Returns the verified email + full name.
-export async function enrichPerson(id: string, domain?: string): Promise<Contact> {
-  const body: Record<string, unknown> = { id };
-  if (domain) body.domain = domain;
-  const data = await post("/people/match", body);
-  const p = data.person;
-  if (!p) throw new Error(`Enrichment returned no person for id ${id}`);
+// Shape a /people/match hit (the paid endpoint) into a Contact.
+function contactFromMatch(p: any, domain?: string): Contact {
   const org = p.organization ?? {};
   return {
     firstName: p.first_name,
@@ -398,4 +480,22 @@ export async function enrichPerson(id: string, domain?: string): Promise<Contact
       keywords: (org.keywords ?? []).slice(0, 12),
     },
   };
+}
+
+// Costs 1 Apollo credit per matched person. Returns the verified email + full name.
+export async function enrichPerson(id: string, domain?: string): Promise<Contact> {
+  const body: Record<string, unknown> = { id };
+  if (domain) body.domain = domain;
+  const data = await post("/people/match", body);
+  if (!data.person) throw new Error(`Enrichment returned no person for id ${id}`);
+  return contactFromMatch(data.person, domain);
+}
+
+// Costs 1 Apollo credit. Resolve a person EXACTLY by their LinkedIn profile URL —
+// the free keyword search can't match bare slugs (".../in/deepshah08"), so this is
+// the opt-in paid fallback the /people URL box offers when free search finds no one.
+export async function enrichPersonByLinkedin(linkedinUrl: string): Promise<Contact> {
+  const data = await post("/people/match", { linkedin_url: linkedinUrl });
+  if (!data.person) throw new Error("Apollo couldn't match that LinkedIn URL to a person.");
+  return contactFromMatch(data.person);
 }
