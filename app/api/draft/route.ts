@@ -48,6 +48,7 @@ interface ResultLine {
   emailSource?: "apollo" | "hunter" | "careers";
   emailScore?: number;
   resumeAttached?: boolean;
+  creditSpent?: boolean; // true when this row hit Apollo enrichment (1 credit) — client decrements the meter
 }
 
 export async function POST(req: Request) {
@@ -113,6 +114,7 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(line) + "\n"));
 
       for (const person of people) {
+        let creditSpent = false; // set once Apollo enrichment actually runs for this person
         try {
           const firstName = person.firstName;
           let fullName: string;
@@ -140,6 +142,7 @@ export async function POST(req: Request) {
           } else {
             // Apollo person — enrich (1 credit); Hunter Email Finder fallback if no email.
             const contact = await enrichPerson(person.id, domain);
+            creditSpent = true; // Apollo charged for the match — reflect it in the meter
             fullName = contact.fullName;
             title = contact.title;
             email = contact.email;
@@ -156,7 +159,7 @@ export async function POST(req: Request) {
           }
 
           if (!email) {
-            send({ id: person.id, name: fullName, title, status: "skipped", reason: "no email (Apollo or Hunter)" });
+            send({ id: person.id, name: fullName, title, status: "skipped", reason: "no email (Apollo or Hunter)", creditSpent });
             continue;
           }
 
@@ -221,9 +224,10 @@ export async function POST(req: Request) {
             emailSource,
             emailScore,
             resumeAttached,
+            creditSpent,
           });
         } catch (e: any) {
-          send({ id: person.id, status: "error", reason: e?.message ?? "Failed to draft." });
+          send({ id: person.id, status: "error", reason: e?.message ?? "Failed to draft.", creditSpent });
         }
       }
       controller.close();

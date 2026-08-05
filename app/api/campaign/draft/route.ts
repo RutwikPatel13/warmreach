@@ -49,6 +49,7 @@ interface ResultLine {
   subject?: string;
   bodyPreview?: string;
   draftId?: string;
+  creditSpent?: boolean; // true when this row hit Apollo enrichment (1 credit) — client decrements the meter
 }
 
 // Bulk cold-outreach drafting for a campaign. For each company it generates the
@@ -118,6 +119,7 @@ export async function POST(req: Request) {
         };
 
         for (const person of company.people) {
+          let creditSpent = false; // set once Apollo enrichment actually runs for this person
           try {
             const variant = person.variant ?? classifyVariant(person.title ?? "");
             let email: string | null;
@@ -135,6 +137,7 @@ export async function POST(req: Request) {
               emailStatus = person.source === "csv" ? "csv" : person.source === "careers" ? "careers" : "";
             } else {
               const contact = await enrichPerson(person.id, company.domain ?? undefined);
+              creditSpent = true; // Apollo charged for the match — reflect it in the meter
               email = contact.email;
               firstName = person.firstName || contact.firstName;
               fullName = contact.fullName;
@@ -143,11 +146,11 @@ export async function POST(req: Request) {
             }
 
             if (!email) {
-              send({ id: person.id, company: company.name, name: fullName, title, status: "skipped", reason: "no verified email" });
+              send({ id: person.id, company: company.name, name: fullName, title, status: "skipped", reason: "no verified email", creditSpent });
               continue;
             }
             if (skipContacted && alreadyContacted(email) && !lastDraftIdFor(email) && !person.replaceDraftId) {
-              send({ id: person.id, company: company.name, name: fullName, title, email, status: "skipped", reason: "already contacted (in outreach log)" });
+              send({ id: person.id, company: company.name, name: fullName, title, email, status: "skipped", reason: "already contacted (in outreach log)", creditSpent });
               continue;
             }
 
@@ -189,13 +192,14 @@ export async function POST(req: Request) {
               });
             }
 
-            send({ id: person.id, company: company.name, name: fullName, title, email, status: "drafted", reason, subject: tpl.subject, bodyPreview: fullBody, draftId });
+            send({ id: person.id, company: company.name, name: fullName, title, email, status: "drafted", reason, subject: tpl.subject, bodyPreview: fullBody, draftId, creditSpent });
           } catch (e: any) {
             send({
               id: person.id,
               company: company.name,
               status: "error",
               reason: e?.message ?? "Failed to draft.",
+              creditSpent,
             });
           }
         }
