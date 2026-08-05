@@ -27,10 +27,18 @@ Run this once after cloning:
 git config core.hooksPath .githooks
 ```
 
-That enables [`.githooks/pre-push`](.githooks/pre-push), which stops a push to
-`main` before it leaves your machine. It catches the accident — it isn't a
-permission boundary, and `git push --no-verify` still overrides it. Use the
-override only when you mean to.
+That enables [`.githooks/pre-push`](.githooks/pre-push), which runs two checks
+before anything leaves your machine:
+
+1. **Nothing lands directly on `main`** — including deleting it.
+2. **No secret or personal-data file gets pushed, on any branch.** It refuses
+   `.env`, `credentials/`, `data/`, `src/profile.ts`, `HANDOFF.md`, and
+   anything shaped like a token, client secret, or private key — even if it was
+   staged with `git add -f`. `.env.example` is allowed through; it's the
+   committed placeholder.
+
+Both catch accidents, not intent: `git push --no-verify` still overrides them.
+Use the override only when you mean to.
 
 ## Before you open a PR
 

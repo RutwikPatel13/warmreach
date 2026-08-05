@@ -1,5 +1,8 @@
 #!/bin/sh
-# Refuses pushes that would land directly on main.
+# Two guards, checked on every push:
+#
+#   1. Nothing lands directly on main.
+#   2. No secret or personal-data file leaves the machine, on ANY branch.
 #
 # Enable once per clone:
 #
@@ -7,35 +10,78 @@
 #
 # Git doesn't install hooks on clone, so this is opt-in by design. It guards
 # against the accidental push — wrong branch checked out, a rebase that ran
-# longer than expected — not against a deliberate one. `--no-verify` still goes
-# through, and that's the point: the override should be easy, explicit, and
-# visible in your shell history rather than something you disable and forget.
+# longer than expected, a `git add -f` that shouldn't have been forced — not
+# against a deliberate one. `--no-verify` still goes through, and that's the
+# point: the override should be easy, explicit, and visible in your shell
+# history rather than something you disable and forget.
 
 protected="main"
 empty="0000000000000000000000000000000000000000"
 
+# Paths that must never reach the remote. .env.example is deliberately NOT
+# matched here: it's the committed placeholder and belongs in the repo.
+secret_paths='^\.env$|^\.env\.(local|production|development)$|^credentials/|^data/|^src/profile\.ts$|^HANDOFF\.md$|(^|/)[^/]*token[^/]*\.json$|(^|/)client_secret[^/]*\.json$|\.pem$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$'
+
+fail=0
+
 while read -r _local_ref local_sha remote_ref _remote_sha; do
-	[ "$remote_ref" = "refs/heads/$protected" ] || continue
-
-	if [ "$local_sha" = "$empty" ]; then
-		echo "blocked: refusing to delete '$protected' on the remote." >&2
-	else
-		echo "blocked: refusing to push directly to '$protected'." >&2
-	fi
-
-	cat >&2 <<EOF
+	# ── guard 1: keep main clean ──────────────────────────────────────────
+	if [ "$remote_ref" = "refs/heads/$protected" ]; then
+		if [ "$local_sha" = "$empty" ]; then
+			echo "blocked: refusing to delete '$protected' on the remote." >&2
+		else
+			echo "blocked: refusing to push directly to '$protected'." >&2
+		fi
+		cat >&2 <<EOF
 
   Put it on a branch and open a pull request:
 
       git switch -c your-branch-name
       git push -u origin your-branch-name
 
-  If you genuinely mean to push to $protected, say so explicitly:
+EOF
+		fail=1
+		continue
+	fi
 
-      git push --no-verify
+	# ── guard 2: no secrets or personal data, on any branch ───────────────
+	[ "$local_sha" = "$empty" ] && continue # branch deletion introduces no files
+
+	if [ "$_remote_sha" = "$empty" ]; then
+		# New branch: inspect commits that aren't on any remote yet.
+		commits=$(git rev-list "$local_sha" --not --remotes 2>/dev/null)
+	else
+		commits=$(git rev-list "$_remote_sha..$local_sha" 2>/dev/null)
+	fi
+	[ -z "$commits" ] && continue
+
+	files=$(echo "$commits" | xargs git diff-tree --no-commit-id --name-only -r 2>/dev/null)
+	offenders=$(echo "$files" | grep -E "$secret_paths" | sort -u)
+
+	if [ -n "$offenders" ]; then
+		echo "blocked: this push contains files that must never leave your machine:" >&2
+		echo "$offenders" | while read -r f; do echo "    $f" >&2; done
+		cat >&2 <<EOF
+
+  These hold API keys, Gmail tokens, or real contact data. If one was
+  committed by mistake, remove it from the history before pushing:
+
+      git rm --cached <file>
+      git commit --amend --no-edit
+
+  For something already several commits back, rewrite the range:
+
+      git rebase -i <commit-before-it>
 
 EOF
-	exit 1
+		fail=1
+	fi
 done
+
+if [ "$fail" -ne 0 ]; then
+	echo "  Override deliberately, only if you are certain:  git push --no-verify" >&2
+	echo >&2
+	exit 1
+fi
 
 exit 0
