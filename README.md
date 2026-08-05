@@ -1,8 +1,12 @@
-warmreach
+# warmreach
 
 Cold outreach made warm. After you apply for a job, warmreach finds the right people at the company (recruiters, founders, engineering leads), writes each of them a personalized email grounded in real company facts, and lands the results as Gmail drafts — resume attached, ready for you to review and send.
 
-Pipeline: **Apollo** (find people → verified emails, with optional Hunter.io fallback) → **Claude** (personalize each email from real company facts and the job description) → **Gmail** (drafts, never auto-sent). Every contact is logged to `data/outreach_log.csv` so you never double-contact anyoneSource&, peopl
+Pipeline: **Apollo** (find people → verified emails, with optional Hunter.io fallback) → **Claude** (personalize each email from real company facts and the job description) → **Gmail** (drafts, never auto-sent). Every contact is logged to `data/outreach_log.csv` so you never double-contact anyone.
+
+![The Applications workspace: pick a company, target the roles worth reaching, attach a resume](docs/screenshots/applications.png)
+
+> Screenshots use placeholder names, companies, and addresses. The real app runs entirely on your own data, on `localhost`, and none of it is in this repo.
 
 ## Web app
 
@@ -18,6 +22,30 @@ The web UI is the main way to use warmreach:
 4. **Review & send** — edit inline, create Gmail drafts, then send from the app or from Gmail.
 
 Workspaces live in browser tabs and persist across reloads. All API routes reject non-local requests — this is a personal tool meant to run on `localhost`.
+
+## Screens
+
+**People** — browse a company's team for free; a credit is spent only on the people you actually reveal. **Campaigns** — the same flow in bulk, driven from a saved prospect list.
+
+| People | Campaigns |
+|---|---|
+| ![Browse a team or find one person by name or LinkedIn URL](docs/screenshots/people.png) | ![Bulk cold outreach across every company on a list](docs/screenshots/campaigns.png) |
+
+**Companies** and **Open roles** — free Apollo lookups. A dossier gives you headcount, tech stack, funding, and what the company is hiring for, and a role can be carried straight into outreach as context.
+
+| Companies | Open roles |
+|---|---|
+| ![Company dossier: headcount, stack, funding](docs/screenshots/companies.png) | ![What a company is hiring for right now](docs/screenshots/jobs.png) |
+
+**Matches** — warmreach watches the companies you care about, scores each new posting against your resume, and tells you honestly where you're a stretch. **Follow-ups** — company-wise nudges that stop the moment someone replies.
+
+| Matches | Follow-ups |
+|---|---|
+| ![New roles scored against the resume, with evidence and gaps](docs/screenshots/matches.png) | ![Reply-aware follow-up cadence across everyone you applied to](docs/screenshots/followups.png) |
+
+**Database** — everything you've ever sent, in one searchable table, so you never contact the same person twice.
+
+![Every contact logged, with outreach volume over time](docs/screenshots/database.png)
 
 ## CLI
 
