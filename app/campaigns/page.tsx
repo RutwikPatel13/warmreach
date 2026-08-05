@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CreditMeter } from "../_components/credits";
+import { useCredits } from "../_components/credits";
+import { SidebarExtra } from "../_components/AppShell";
 
 // ── Campaigns: bulk, list-driven cold outreach ──────────────────────────────
 // Sibling to the Applications page (app/page.tsx). Drives outreach from the
@@ -10,7 +11,6 @@ import { CreditMeter } from "../_components/credits";
 // Gmail, and drip-send. State lives under its OWN localStorage namespace so it
 // never touches the Applications workspaces.
 
-type Theme = "light" | "dark";
 type Variant = "recruiter" | "engineering";
 type Mode = "drip" | "once" | "manual";
 
@@ -31,6 +31,7 @@ interface Unresolved { input: string; reason: string }
 interface ResultLine {
   id: string; company: string; name?: string; title?: string; email?: string | null;
   status: "drafted" | "skipped" | "error"; reason?: string; subject?: string; bodyPreview?: string; draftId?: string;
+  creditSpent?: boolean; // this row hit Apollo enrichment — decrement the credit meter
 }
 interface ScheduledSend {
   id: string; draftId: string; name?: string; subject?: string; sendAt: string;
@@ -50,7 +51,6 @@ const VARIANT_LABEL: Record<Variant, string> = { recruiter: "Founder / recruiter
 // ── persistence (own namespace — never touches warmreach:v1: workspaces) ─────
 const NS = "warmreach:campaign:v1:";
 const STATE_KEY = NS + "state";
-const THEME_KEY = "warmreach:v1:theme"; // shared UI pref (same meaning/values app-wide)
 
 function loadJSON<T>(key: string): T | null {
   if (typeof window === "undefined") return null;
@@ -106,7 +106,7 @@ function CampaignLogo({ name, logoUrl }: { name: string; logoUrl?: string | null
 }
 
 export default function CampaignsPage() {
-  const [theme, setTheme] = useState<Theme>("light");
+  const { spend } = useCredits(); // decrement the Apollo meter as enrichment credits are spent
   const [hydrated, setHydrated] = useState(false);
 
   const [lists, setLists] = useState<ProspectList[]>([]);
@@ -150,9 +150,6 @@ export default function CampaignsPage() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set()); // companies whose people are shown
 
-  // ── theme ──
-  useEffect(() => { const s = loadJSON<Theme>(THEME_KEY); if (s === "light" || s === "dark") setTheme(s); }, []);
-  useEffect(() => { document.documentElement.dataset.theme = theme; saveJSON(THEME_KEY, theme); }, [theme]);
 
   // ── load prospect lists + groups ──
   useEffect(() => {
@@ -410,6 +407,7 @@ export default function CampaignsPage() {
       });
       if (!res.ok || !res.body) { const d = await res.json().catch(() => ({})); throw new Error(d.error ?? "Drafting failed."); }
       await readNdjson(res.body, (r: ResultLine) => {
+        if (r.creditSpent) spend(1); // Apollo charged for this match — tick the meter down live
         setResults((prev) => ({ ...prev, [r.id]: r }));
         setResultOrder((prev) => (prev.includes(r.id) ? prev : [...prev, r.id]));
       });
@@ -491,23 +489,9 @@ export default function CampaignsPage() {
   };
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="side-brand"><span className="brand-mark" aria-hidden="true" /><span className="brand-name">warmreach</span></div>
-
-        <nav className="side-section">
-          <div className="side-label">Workspace</div>
-          <div className="cmp-nav">
-            <a href="/">◱&nbsp; Applications</a>
-            <a href="/campaigns" className="active" aria-current="page">◎&nbsp; Campaigns</a>
-            <a href="/companies">◨&nbsp; Companies</a>
-            <a href="/people">☰&nbsp; People</a>
-            <a href="/jobs">▤&nbsp; Open roles</a>
-            <a href="/followups">↩&nbsp; Follow-ups</a>
-            <a href="/database">▦&nbsp; Database</a>
-          </div>
-        </nav>
-
+    <>
+      {/* page-owned sidebar chrome — portalled into the shared AppShell sidebar */}
+      <SidebarExtra>
         <div className="side-section">
           <div className="side-label">Source lists</div>
           <div className="cmp-lists">
@@ -522,20 +506,9 @@ export default function CampaignsPage() {
             ))}
           </div>
         </div>
+      </SidebarExtra>
 
-        <div className="side-foot">
-          <CreditMeter />
-          <button type="button" className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
-            aria-pressed={theme === "dark"} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-            onClick={() => setTheme((p) => (p === "light" ? "dark" : "light"))}>
-            <span className="theme-toggle-track" aria-hidden="true"><span className="theme-toggle-thumb" /></span>
-            <span className="theme-toggle-label">{theme === "dark" ? "Dark" : "Light"}</span>
-          </button>
-        </div>
-      </aside>
-
-      <main className="workspace">
-        <div className="workspace-inner">
+      <div className="workspace-inner">
           <div className="main-top">
             <div className="main-co">
               <h1>Campaigns</h1>
@@ -810,8 +783,7 @@ export default function CampaignsPage() {
             </>
           )}
         </div>
-      </main>
-    </div>
+    </>
   );
 }
 

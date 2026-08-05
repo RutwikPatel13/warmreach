@@ -5,7 +5,7 @@
 // which don't spend credits.
 
 import { useState } from "react";
-import Shell from "../_components/Shell";
+import { PageHeader } from "../_components/AppShell";
 import CompanyDossier, { type DossierTarget } from "../_components/CompanyDossier";
 
 interface CompanyCard {
@@ -124,8 +124,9 @@ function CompaniesView() {
 
 export default function CompaniesPage() {
   return (
-    <Shell active="companies" title="Companies" subtitle="Find a company and open its free dossier — headcount, tech stack, funding, and open roles.">
+    <div className="workspace-inner">
+      <PageHeader title={'Companies'} subtitle={'Find a company and open its free dossier — headcount, tech stack, funding, and open roles.'} />
       <CompaniesView />
-    </Shell>
+    </div>
   );
 }

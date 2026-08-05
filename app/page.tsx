@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CreditMeter } from "./_components/credits";
+import { useCredits } from "./_components/credits";
+import { SidebarExtra } from "./_components/AppShell";
 
 type Variant = "recruiter" | "engineering";
 
@@ -86,6 +87,7 @@ interface ResultLine {
   emailSource?: "apollo" | "hunter";
   emailScore?: number;
   resumeAttached?: boolean;
+  creditSpent?: boolean; // this row hit Apollo enrichment — decrement the credit meter
 }
 
 type Theme = "light" | "dark";
@@ -213,7 +215,6 @@ function toLocalInputValue(d: Date): string {
 // ── localStorage persistence (SSR-safe) ─────────────────────────────────────
 const NS = "warmreach:v1:";
 const TABS_KEY = NS + "tabs";
-const THEME_KEY = NS + "theme";
 const wsKey = (id: number) => `${NS}ws:${id}`;
 
 // One-time migration from the pre-rename namespace so existing tabs survive.
@@ -607,6 +608,7 @@ function CompanyWorkspace({
   onLibraryChange: (lib: Library) => void;
   lifetime: OutreachStats | null;
 }) {
+  const { spend } = useCredits(); // decrement the Apollo meter as enrichment credits are spent
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
   const [jd, setJd] = useState("");
@@ -1146,6 +1148,7 @@ function CompanyWorkspace({
         for (const line of lines) {
           if (!line.trim()) continue;
           const r = JSON.parse(line) as ResultLine;
+          if (r.creditSpent) spend(1); // Apollo charged for this match — tick the meter down live
           setResults((prev) => ({ ...prev, [r.id]: r }));
         }
       }
@@ -1775,7 +1778,6 @@ export default function Page() {
   const [tabs, setTabs] = useState<Tab[]>([{ id: 1, title: "New company" }]);
   const [activeId, setActiveId] = useState(1);
   const [hydrated, setHydrated] = useState(false);
-  const [theme, setTheme] = useState<Theme>("light");
   const [resumes, setResumes] = useState<ResumeFile[]>([]);
   const [defaultResume, setDefaultResume] = useState("");
   const [library, setLibrary] = useState<Library>({ presets: [], templates: [] });
@@ -1806,16 +1808,6 @@ export default function Page() {
   useEffect(() => {
     fetch("/api/stats").then((r) => r.json()).then(setLifetime).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    const saved = loadJSON<Theme>(THEME_KEY);
-    if (saved === "light" || saved === "dark") setTheme(saved);
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    saveJSON(THEME_KEY, theme);
-  }, [theme]);
 
   // Restore tabs after mount (localStorage isn't available during SSR / first paint).
   useEffect(() => {
@@ -1880,26 +1872,11 @@ export default function Page() {
   }
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="side-brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">warmreach</span>
-        </div>
-
-        <nav className="side-section">
-          <div className="side-label">Workspace</div>
-          <div className="cmp-nav">
-            <a href="/" className="active" aria-current="page">◱&nbsp; Applications</a>
-            <a href="/campaigns">◎&nbsp; Campaigns</a>
-            <a href="/companies">◨&nbsp; Companies</a>
-            <a href="/people">☰&nbsp; People</a>
-            <a href="/jobs">▤&nbsp; Open roles</a>
-            <a href="/followups">↩&nbsp; Follow-ups</a>
-            <a href="/database">▦&nbsp; Database</a>
-          </div>
-        </nav>
-
+    <>
+      {/* The workspace list is page-owned chrome — it renders into the shared
+          sidebar via the portal slot, so this page keeps its tab state while
+          the brand/nav/credits/theme come from AppShell like every other page. */}
+      <SidebarExtra>
         <div className="side-section">
           <div className="side-label">Workspaces</div>
           <div className="ws-list">
@@ -1947,46 +1924,28 @@ export default function Page() {
             + New company
           </button>
         </div>
+      </SidebarExtra>
 
-        <div className="side-foot">
-          <CreditMeter />
-          <button
-            type="button"
-            className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
-            aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-            aria-pressed={theme === "dark"}
-            onClick={() => setTheme((prev) => (prev === "light" ? "dark" : "light"))}
-          >
-            <span className="theme-toggle-track" aria-hidden="true">
-              <span className="theme-toggle-thumb" />
-            </span>
-            <span className="theme-toggle-label">{theme === "dark" ? "Dark" : "Light"}</span>
-          </button>
-        </div>
-      </aside>
-
-      <main className="workspace">
-        {hydrated &&
-          tabs.map((t) => (
-            <div key={t.id} style={{ display: t.id === activeId ? "block" : "none" }}>
-              <div className="workspace-inner">
-                <CompanyWorkspace
-                  storageKey={wsKey(t.id)}
-                  onTitle={(title) => setTitle(t.id, title)}
-                  onIdentity={(info) => setIdentity(t.id, info)}
-                  onStage={(stage) => setStage(t.id, stage)}
-                  resumes={resumes}
-                  defaultResume={defaultResume}
-                  library={library}
-                  onLibraryChange={setLibrary}
-                  lifetime={lifetime}
-                />
-              </div>
+      {hydrated &&
+        tabs.map((t) => (
+          <div key={t.id} style={{ display: t.id === activeId ? "block" : "none" }}>
+            <div className="workspace-inner">
+              <CompanyWorkspace
+                storageKey={wsKey(t.id)}
+                onTitle={(title) => setTitle(t.id, title)}
+                onIdentity={(info) => setIdentity(t.id, info)}
+                onStage={(stage) => setStage(t.id, stage)}
+                resumes={resumes}
+                defaultResume={defaultResume}
+                library={library}
+                onLibraryChange={setLibrary}
+                lifetime={lifetime}
+              />
             </div>
-          ))}
-      </main>
+          </div>
+        ))}
 
       <Dialog state={dialog} onClose={() => setDialog(null)} />
-    </div>
+    </>
   );
 }

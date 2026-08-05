@@ -10,7 +10,7 @@
 // existing scheduler.
 
 import { useEffect, useRef, useState } from "react";
-import Shell from "../_components/Shell";
+import { PageHeader } from "../_components/AppShell";
 import ScheduleMenu from "../_components/ScheduleMenu";
 
 type Tone = "gentle" | "direct" | "add_value";
@@ -772,8 +772,9 @@ function FollowupsView() {
 
 export default function FollowupsPage() {
   return (
-    <Shell active="followups" title="Follow-ups" subtitle="Company-wise, reply-aware nudges over everyone you've already applied to.">
+    <div className="workspace-inner">
+      <PageHeader title={'Follow-ups'} subtitle={"Company-wise, reply-aware nudges over everyone you've already applied to."} />
       <FollowupsView />
-    </Shell>
+    </div>
   );
 }

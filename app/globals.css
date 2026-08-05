@@ -1854,6 +1854,14 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 
 /* ── people rows (/people) ───────────────────────────────────── */
 .ppl-targeting { margin-top: 16px; }
+.ppl-find { display: flex; gap: 8px; }
+.ppl-find input { flex: 1; min-width: 0; }
+.ppl-find-or {
+  text-align: center; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em;
+  color: var(--faint); margin: 12px 0;
+}
+@media (max-width: 620px) { .ppl-find { flex-direction: column; } }
+.ppl-exact { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .ppl-card { padding: 8px 10px; }
 .ppl-head { padding: 12px 10px 10px; margin-bottom: 0; border-bottom: 1px solid var(--border); }
 .plist { display: flex; flex-direction: column; }
@@ -1991,3 +1999,746 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 .fu-recent-row .fu-logo { width: 26px; height: 26px; font-size: 11px; border-radius: 7px; }
 
 @media (max-width: 620px) { .fu-prow { gap: 8px 10px; } .fu-airead { flex-wrap: wrap; } }
+
+/* ── compose dock (one-off email; /people row or the sidebar Compose) ──
+   Floats bottom-right so it never blocks the list behind it. Children are
+   .dock-* so nothing collides with the batch flow's .compose-actions. */
+.compose-dock {
+  position: fixed;
+  right: 24px;
+  bottom: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  width: min(544px, calc(100vw - 48px));
+  max-height: min(660px, calc(100vh - 40px));
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-bottom: none;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  box-shadow: 0 -2px 12px var(--shadow), 0 18px 48px var(--shadow-lg);
+  overflow: hidden;
+}
+
+.compose-dock.is-full {
+  right: 50%;
+  bottom: 50%;
+  transform: translate(50%, 50%);
+  width: min(900px, calc(100vw - 64px));
+  height: calc(100vh - 96px);
+  max-height: none;
+  border-bottom: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+}
+
+.compose-dock.is-min {
+  max-height: none;
+}
+
+/* title bar */
+.dock-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.dock-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 640;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dock-bar-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.dock-bar-actions button {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 2px 7px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: var(--r-sm);
+}
+
+.dock-bar-actions button:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* recipient + subject rows — borderless, Gmail-style underlines */
+.dock-fields {
+  flex-shrink: 0;
+}
+
+.dock-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dock-row label {
+  margin: 0;
+  flex-shrink: 0;
+  width: 46px;
+  font-size: 12.5px;
+  color: var(--faint);
+}
+
+.dock-row input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 11px 0;
+  font-size: 13.5px;
+}
+
+.dock-row input:focus {
+  box-shadow: none;
+  border: none;
+}
+
+.dock-toggles {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.dock-toggles button {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  padding: 2px 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.dock-toggles button:hover {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* body */
+.dock-body {
+  flex: 1;
+  min-height: 180px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 14px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  resize: none;
+}
+
+.dock-body:focus {
+  box-shadow: none;
+  border: none;
+}
+
+.dock-status {
+  flex-shrink: 0;
+  padding: 0 14px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dock-status.is-err {
+  color: var(--err);
+}
+
+/* footer */
+.dock-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+.dock-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dock-bold {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  width: 28px;
+  padding: 0;
+  height: 28px;
+  font-weight: 800;
+  font-size: 13px;
+  border-radius: var(--r-sm);
+}
+
+.dock-bold:hover {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.dock-chip,
+.dock-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 6px 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dock-attach:hover {
+  background: var(--bg);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.dock-chip select {
+  width: auto;
+  max-width: 168px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dock-chip select:focus {
+  box-shadow: none;
+}
+
+.dock-chip > button {
+  background: transparent;
+  color: var(--faint);
+  border: none;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.dock-chip > button:hover {
+  background: transparent;
+  color: var(--err);
+}
+
+.dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.dock-actions > button:first-child {
+  padding: 9px 20px;
+  font-size: 13px;
+}
+
+.dock-discard {
+  padding: 8px 11px;
+  font-size: 13px;
+}
+
+.dock-discard:hover {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+/* the schedule popover has to open upward inside a bottom-docked composer */
+.compose-dock .sched-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* sidebar Compose entry point */
+.side-compose {
+  width: 100%;
+  margin-bottom: 18px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  text-align: left;
+  flex-shrink: 0;
+}
+
+@media (max-width: 620px) {
+  .compose-dock {
+    right: 0;
+    left: 0;
+    width: 100%;
+    border-radius: 0;
+  }
+  .compose-dock.is-full {
+    transform: none;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100vh;
+    border-radius: 0;
+  }
+}
+
+/* Portal target for page-owned sidebar chrome (<SidebarExtra>). Collapses when
+   a page contributes nothing, so pages without it keep the original spacing. */
+.side-extra {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.side-extra:empty {
+  display: none;
+}
+
+/* The nav is a fixed list — it shouldn't compete with .side-extra for free
+   space. Letting it grow (the old .side-section flex:1) meant the workspace
+   list and the nav split the slack, which left the section labels cramped once
+   the Compose button was added. Free space now belongs to .side-extra alone. */
+.side-nav {
+  flex: 0 0 auto;
+}
+
+/* ── Matches / watchlist (/matches) ──────────────────────────────────────────
+   Appended block, wholly additive: every selector here is `wl-`-prefixed so it
+   cannot collide with, or be overridden by, anything above. The page otherwise
+   reuses the shared .card, .searchbar, .hint, .error-box, .co-logo and
+   .btn-link-* primitives rather than restyling them. */
+
+.wl-navcount {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.wl-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin: -4px -4px 0;
+  padding: 0 4px;
+}
+.wl-tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 0;
+}
+.wl-tab:hover { color: var(--text); }
+.wl-tab.is-on {
+  color: var(--text);
+  font-weight: 560;
+  border-bottom-color: var(--accent);
+}
+.wl-tab-n {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+  margin-left: 5px;
+}
+.wl-tabs-right { margin-left: auto; padding-right: 4px; }
+
+.wl-list { display: flex; flex-direction: column; gap: 12px; }
+
+/* match card */
+.wl-match {
+  display: grid;
+  grid-template-columns: 4px 1fr;
+  overflow: hidden;
+  padding: 0;
+}
+.wl-stripe { background: var(--border-strong); }
+.wl-match--strong .wl-stripe { background: var(--ok); }
+.wl-match--worth_a_look .wl-stripe { background: var(--accent); }
+.wl-match--stretch .wl-stripe { background: var(--warn); }
+
+.wl-match-in {
+  padding: 15px 17px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  min-width: 0;
+}
+.wl-match-head { display: flex; align-items: flex-start; gap: 12px; }
+.wl-match-headings { flex: 1; min-width: 0; }
+.wl-match-title {
+  font-weight: 620;
+  font-size: 15px;
+  letter-spacing: -0.008em;
+  text-wrap: balance;
+}
+.wl-match-meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+
+.wl-fit { text-align: right; flex: none; }
+.wl-fit-n {
+  font-family: var(--font-mono);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  color: var(--muted);
+}
+.wl-match--strong .wl-fit-n { color: var(--ok); }
+.wl-match--worth_a_look .wl-fit-n { color: var(--accent); }
+.wl-match--stretch .wl-fit-n { color: var(--warn); }
+
+.wl-pill {
+  display: inline-block;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 2px 7px;
+  margin-top: 4px;
+  background: var(--border);
+  color: var(--muted);
+}
+.wl-match--strong .wl-pill { background: var(--ok-soft); color: var(--ok); }
+.wl-match--worth_a_look .wl-pill { background: var(--accent-soft); color: var(--accent); }
+.wl-match--stretch .wl-pill { background: var(--warn-soft); color: var(--warn); }
+
+.wl-why { display: flex; flex-direction: column; gap: 7px; }
+.wl-why-row {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 9px;
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.wl-mark { color: var(--ok); font-size: 11px; line-height: 1.8; }
+.wl-mark--gap { color: var(--warn); }
+.wl-quote { color: var(--muted); font-style: italic; }
+
+.wl-friend {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--accent-soft);
+  border-radius: var(--r-sm);
+  padding: 9px 11px;
+  font-size: 13px;
+}
+.wl-friend-av {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 620;
+  flex: none;
+}
+
+.wl-prov { display: flex; gap: 6px; flex-wrap: wrap; }
+.wl-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 2px 6px;
+  color: var(--faint);
+}
+.wl-chip--warn { border-color: var(--warn); color: var(--warn); }
+
+.wl-acts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* watching rows */
+.wl-addbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.wl-addbar-t { font-weight: 620; font-size: 14px; }
+.wl-addbar-s { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+
+.wl-row { display: flex; align-items: flex-start; gap: 12px; padding: 13px 0; }
+.wl-row + .wl-row { border-top: 1px solid var(--border); }
+.wl-row-main { flex: 1; min-width: 0; }
+.wl-row-name { font-weight: 620; font-size: 14px; }
+.wl-row-dom {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+  font-weight: 400;
+  margin-left: 6px;
+}
+.wl-row-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.wl-row-err { color: var(--err); font-size: 12px; margin-top: 4px; }
+.wl-chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
+
+/* add panel */
+.wl-panel { padding: 0; overflow: hidden; }
+.wl-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 17px;
+  border-bottom: 1px solid var(--border);
+}
+.wl-panel-t { font-weight: 620; font-size: 14.5px; }
+.wl-panel-s { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.wl-panel-body { padding: 17px; display: flex; flex-direction: column; gap: 20px; }
+.wl-panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 17px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.wl-foot-note { color: var(--muted); font-size: 12px; }
+.wl-foot-actions { display: flex; gap: 8px; }
+
+.wl-field { display: flex; flex-direction: column; gap: 9px; }
+.wl-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wl-opt {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.wl-input {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13.5px;
+}
+.wl-input::placeholder { color: var(--faint); }
+.wl-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.wl-cand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 11px;
+  font: inherit;
+  cursor: pointer;
+}
+.wl-cand:hover:not(:disabled) { border-color: var(--border-strong); }
+.wl-cand:disabled { opacity: 0.55; cursor: default; }
+.wl-cand.is-on { border-color: var(--accent); background: var(--accent-soft); }
+.wl-cand-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wl-cand-n { font-weight: 560; font-size: 13.5px; }
+.wl-cand-d { font-family: var(--font-mono); font-size: 11px; color: var(--faint); margin-top: 1px; }
+.wl-cand-tick { color: var(--accent); flex: none; }
+
+.wl-tagbox {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  padding: 7px 9px;
+}
+.wl-tagbox input {
+  flex: 1;
+  min-width: 140px;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+}
+.wl-tagbox input::placeholder { color: var(--faint); }
+.wl-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: var(--r-sm);
+  padding: 2px 4px 2px 8px;
+  font-size: 12.5px;
+  font-weight: 560;
+}
+.wl-tag button {
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.6;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+}
+.wl-tag button:hover { opacity: 1; }
+
+.wl-preview {
+  background: var(--ok-soft);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.wl-preview strong { color: var(--ok); }
+.wl-preview-eg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.wl-known {
+  background: var(--ok-soft);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 9px 11px;
+  font-size: 12.5px;
+}
+
+/* Matches — states added after first use: sweep feedback, undo, close, warnings */
+.wl-note {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.wl-undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.wl-undo strong { color: var(--text); font-weight: 560; }
+
+.wl-close {
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  flex: none;
+}
+.wl-close:hover { color: var(--text); background: var(--bg); }
+
+.wl-preview--warn { background: var(--warn-soft); }
+.wl-preview--warn strong { color: var(--warn); }
+
+/* The tab strip is flush to the card's top edge; the -4px pulls it out of the
+   card's own padding so the underline meets the card sides. */
+.wl-tabs { margin: -4px -4px 0; }
+
+/* .card already carries margin-bottom: 18px, so the list's own gap would double
+   the spacing between match cards. Let the flex gap own it. */
+.wl-list > .card { margin-bottom: 0; }
+
+.wl-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+.wl-empty .hint { margin: 0; }
+
+/* Role-keyword field: the label carries its own clear/reset controls, since the
+   default set is long enough that you may want to start over. */
+.wl-label-actions { margin-left: auto; display: flex; gap: 12px; }
+.wl-linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+.wl-linkbtn:hover { text-decoration: underline; }

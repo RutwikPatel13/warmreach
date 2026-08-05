@@ -5,7 +5,7 @@
 // People page as context for a personalized draft.
 
 import { useEffect, useState } from "react";
-import Shell from "../_components/Shell";
+import { PageHeader } from "../_components/AppShell";
 import CompanyDossier, { type Dossier, type Job, type DossierTarget } from "../_components/CompanyDossier";
 
 function tint(name: string): string {
@@ -168,8 +168,9 @@ function JobsView() {
 
 export default function JobsPage() {
   return (
-    <Shell active="jobs" title="Open roles" subtitle="What a company is hiring for — free. Take a role to People and draft outreach around it.">
+    <div className="workspace-inner">
+      <PageHeader title={'Open roles'} subtitle={'What a company is hiring for — free. Take a role to People and draft outreach around it.'} />
       <JobsView />
-    </Shell>
+    </div>
   );
 }

@@ -1,14 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CreditMeter } from "../_components/credits";
 
 // ── Database: everyone you've reached out to ────────────────────────────────
 // Read-only view over data/outreach_log.csv (via /api/outreach): stat tiles, a
 // couple of small single-series charts, and a searchable/sortable table. No
 // Apollo/Gmail cost. Shares the app shell + theme with the other pages.
 
-type Theme = "light" | "dark";
 type TypeFilter = "all" | "campaign" | "application";
 type Sort = "date" | "name" | "company";
 
@@ -17,7 +15,6 @@ interface Row {
   email: string; emailStatus: string; subject: string; draftStatus: string;
 }
 
-const THEME_KEY = "warmreach:v1:theme";
 const DAY = 86_400_000;
 
 function fmtDate(t: string, opts?: Intl.DateTimeFormatOptions) {
@@ -33,15 +30,11 @@ function statusClass(s: string) {
 }
 
 export default function DatabasePage() {
-  const [theme, setTheme] = useState<Theme>("light");
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [type, setType] = useState<TypeFilter>("all");
   const [sort, setSort] = useState<Sort>("date");
-
-  useEffect(() => { const s = localStorage.getItem(THEME_KEY); if (s === "dark" || s === "light") setTheme(s); }, []);
-  useEffect(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem(THEME_KEY, theme); } catch { /* quota */ } }, [theme]);
 
   useEffect(() => {
     fetch("/api/outreach").then((r) => r.json()).then((d) => { setRows(d.rows ?? []); setLoading(false); }).catch(() => setLoading(false));
@@ -94,39 +87,8 @@ export default function DatabasePage() {
   }, [rows, q, type, sort]);
   const shown = filtered.slice(0, 500);
 
-  const navLink = (href: string, icon: string, label: string, active = false) => (
-    <a href={href} className={active ? "active" : ""} aria-current={active ? "page" : undefined}>{icon}&nbsp; {label}</a>
-  );
-
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="side-brand"><span className="brand-mark" aria-hidden="true" /><span className="brand-name">warmreach</span></div>
-        <nav className="side-section">
-          <div className="side-label">Workspace</div>
-          <div className="cmp-nav">
-            {navLink("/", "◱", "Applications")}
-            {navLink("/campaigns", "◎", "Campaigns")}
-            {navLink("/companies", "◨", "Companies")}
-            {navLink("/people", "☰", "People")}
-            {navLink("/jobs", "▤", "Open roles")}
-            {navLink("/followups", "↩", "Follow-ups")}
-            {navLink("/database", "▦", "Database", true)}
-          </div>
-        </nav>
-        <div className="side-foot">
-          <CreditMeter />
-          <button type="button" className={`theme-toggle ${theme === "dark" ? "is-dark" : ""}`}
-            aria-pressed={theme === "dark"} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-            onClick={() => setTheme((p) => (p === "light" ? "dark" : "light"))}>
-            <span className="theme-toggle-track" aria-hidden="true"><span className="theme-toggle-thumb" /></span>
-            <span className="theme-toggle-label">{theme === "dark" ? "Dark" : "Light"}</span>
-          </button>
-        </div>
-      </aside>
-
-      <main className="workspace">
-        <div className="workspace-inner">
+    <div className="workspace-inner">
           <div className="main-top">
             <div className="main-co">
               <h1>Database</h1>
@@ -223,8 +185,6 @@ export default function DatabasePage() {
               </div>
             </>
           )}
-        </div>
-      </main>
     </div>
   );
 }
