@@ -15,7 +15,7 @@ import ScheduleMenu from "../_components/ScheduleMenu";
 
 type Tone = "gentle" | "direct" | "add_value";
 type ReplyCategory = "interested" | "auto_ack" | "out_of_office" | "deflection" | "rejection" | "other";
-type PersonStatus = "quiet" | "replied" | "out_of_office" | "bounced";
+type PersonStatus = "quiet" | "replied" | "out_of_office" | "bounced" | "no_thread";
 
 interface ReplyRead {
   category: ReplyCategory;
@@ -272,9 +272,18 @@ function useDraft(company: CompanyState, anchor: PersonState | undefined) {
 // template, and schedule. Used by BOTH the Due cards and the "Follow up the rest
 // anyway" action so they behave identically. ─────────────────────────────────
 function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: PersonState[] }) {
-  const anchor = quiet.find((p) => p.cadence.due) ?? quiet[0];
+  // Only people with a real Gmail thread are genuine follow-ups; "no_thread"
+  // people (no sent email was ever found to them) are shown but NOT pre-selected,
+  // so a nudge can't silently go out as a cold first email.
+  const withThread = quiet.filter((p) => p.status === "quiet");
+  const anchor = withThread.find((p) => p.cadence.due) ?? withThread[0] ?? quiet[0];
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set((quiet.some((p) => p.cadence.due) ? quiet.filter((p) => p.cadence.due) : quiet).map((p) => p.email)),
+    () =>
+      new Set(
+        (withThread.some((p) => p.cadence.due) ? withThread.filter((p) => p.cadence.due) : withThread).map(
+          (p) => p.email,
+        ),
+      ),
   );
   const { tone, setTone, draft, setDraft, generate } = useDraft(company, anchor);
   const [sending, setSending] = useState(false);
@@ -354,13 +363,21 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
 
   return (
     <>
-      <div className="fu-people-summary">{peopleSummary(quiet, anchor)}</div>
+      <div className="fu-people-summary">{peopleSummary(withThread, anchor)}</div>
       <div className="fu-people">
         {quiet.map((p) => (
-          <label key={p.email} className="fu-prow">
+          <label key={p.email} className={`fu-prow${p.status === "no_thread" ? " fu-prow--muted" : ""}`}>
             <input type="checkbox" checked={selected.has(p.email)} onChange={() => toggle(p.email)} />
             <span className="fu-pn">{p.name || p.email}</span>
             <span className="fu-pt">{p.title}</span>
+            {p.status === "no_thread" && (
+              <span
+                className="fu-notag"
+                title="No original email found in your Sent — sending this would be a new email, not a reply."
+              >
+                no original email
+              </span>
+            )}
           </label>
         ))}
       </div>
@@ -456,7 +473,7 @@ function FollowupComposer({ company, quiet }: { company: CompanyState; quiet: Pe
 // composer (+ any bounced people). ───────────────────────────────────────────
 function DueCompanyCard({ c }: { c: CompanyState }) {
   const [open, setOpen] = useState(false);
-  const quiet = c.people.filter((p) => p.status === "quiet" && !p.snoozedUntil);
+  const quiet = c.people.filter((p) => (p.status === "quiet" || p.status === "no_thread") && !p.snoozedUntil);
   const bounced = c.people.filter((p) => p.status === "bounced");
   const dm = useDismiss(c.companyKey);
 
@@ -519,7 +536,7 @@ function DueCompanyCard({ c }: { c: CompanyState }) {
 // composer as the Due cards. ─────────────────────────────────────────────────
 function RepliedCompanyCard({ c }: { c: CompanyState }) {
   const reply = primaryReply(c);
-  const quiet = c.people.filter((p) => p.status === "quiet" && !p.snoozedUntil);
+  const quiet = c.people.filter((p) => (p.status === "quiet" || p.status === "no_thread") && !p.snoozedUntil);
   const [open, setOpen] = useState(false);
   const pill = pillFor(c);
   const genuine = reply?.reply?.category === "interested";

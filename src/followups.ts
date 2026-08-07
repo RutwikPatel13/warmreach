@@ -426,7 +426,7 @@ function isBounce(fromAddr: string, subject: string): boolean {
 
 export type ReplyCategory = "interested" | "auto_ack" | "out_of_office" | "deflection" | "rejection" | "other";
 export type Recommendation = "hold" | "nudge_rest";
-export type PersonStatus = "quiet" | "replied" | "out_of_office" | "bounced";
+export type PersonStatus = "quiet" | "replied" | "out_of_office" | "bounced" | "no_thread";
 
 export interface ReplyRead {
   category: ReplyCategory;
@@ -682,6 +682,7 @@ export async function scanFollowups(
       // error) must not sink the whole batch; on failure treat the person as
       // quiet so the cadence still applies.
       let scanned: ScannedThread;
+      let errored = false;
       if (bounced.has(p.email.toLowerCase())) {
         scanned = { status: "bounced", threadId: null, reply: null };
       } else {
@@ -689,9 +690,15 @@ export async function scanFollowups(
           scanned = await scanPersonThread(auth, fromAddr, p);
         } catch (err) {
           console.error(`followups: scan failed for ${p.email} (treated as quiet):`, err);
+          errored = true;
           scanned = { status: "quiet", threadId: null, reply: null };
         }
       }
+      // A quiet person with NO thread found (and not a transient error) means we
+      // have no sent email to them — there's nothing to reply to, so a "follow-up"
+      // would be a cold first email. Mark "no_thread" so the nudge list skips them.
+      const status: PersonStatus =
+        !errored && scanned.status === "quiet" && scanned.threadId === null ? "no_thread" : scanned.status;
       const cadence = computeCadence(p, g.companyKey, now);
 
       let snoozedUntil: string | null = null;
@@ -702,7 +709,7 @@ export async function scanFollowups(
 
       people.push({
         ...p,
-        status: scanned.status,
+        status,
         reply: scanned.reply,
         threadId: scanned.threadId,
         snoozedUntil,

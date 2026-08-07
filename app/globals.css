@@ -1973,6 +1973,7 @@ a.btn-link-ghost.btn-xs { padding: 5px 11px; font-size: 12.5px; }
 .fu-prow:first-child { border-top: none; }
 .fu-prow input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); flex: 0 0 auto; }
 .fu-prow--muted { opacity: 0.8; }
+.fu-notag { margin-left: auto; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--warn); background: var(--warn-soft); padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
 .fu-pn { font-weight: 600; font-size: 13.5px; }
 .fu-pt { color: var(--muted); font-size: 12.5px; }
 .fu-prow .meta { margin-left: auto; }
