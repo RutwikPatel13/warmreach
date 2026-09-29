@@ -2,7 +2,7 @@
 
 Cold outreach made warm. After you apply for a job, warmreach finds the right people at the company (recruiters, founders, engineering leads), writes each of them a personalized email grounded in real company facts, and lands the results as Gmail drafts — resume attached, ready for you to review and send.
 
-[![warmreach, a 38-second tour: find the right people, write with Claude, land Gmail drafts](docs/video/warmreach-launch.jpg)](docs/video/warmreach-launch.mp4)
+https://github.com/user-attachments/assets/9c3a92ec-c251-4769-86a0-0fc60bbdbaa4
 
 Pipeline: **Apollo** (find people → verified emails, with optional Hunter.io fallback) → **Claude** (personalize each email from real company facts and the job description) → **Gmail** (drafts, never auto-sent). Every contact is logged to `data/outreach_log.csv` so you never double-contact anyone.
 
