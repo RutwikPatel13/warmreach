@@ -45,10 +45,6 @@ Workspaces live in browser tabs and persist across reloads. All API routes rejec
 |---|---|
 | ![New roles scored against the resume, with evidence and gaps](docs/screenshots/matches.png) | ![Reply-aware follow-up cadence across everyone you applied to](docs/screenshots/followups.png) |
 
-**Database** — everything you've ever sent, in one searchable table, so you never contact the same person twice.
-
-![Every contact logged, with outreach volume over time](docs/screenshots/database.png)
-
 ## CLI
 
 ```bash

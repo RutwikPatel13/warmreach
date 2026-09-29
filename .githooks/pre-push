@@ -1,8 +1,12 @@
 #!/bin/sh
-# Two guards, checked on every push:
+# Three guards, checked on every push:
 #
 #   1. Nothing lands directly on main.
 #   2. No secret or personal-data file leaves the machine, on ANY branch.
+#   3. Branches marked never-push stay local, whatever name they'd be pushed as.
+#      They're listed per clone, so their names never appear in the repo:
+#
+#          git config --add hooks.neverPush <branch>
 #
 # Enable once per clone:
 #
@@ -44,8 +48,24 @@ EOF
 		continue
 	fi
 
-	# ── guard 2: no secrets or personal data, on any branch ───────────────
 	[ "$local_sha" = "$empty" ] && continue # branch deletion introduces no files
+
+	# ── guard 3: never-push branches ──────────────────────────────────────
+	# Matches the branch by name, and also any commit of it pushed under another
+	# name (git push origin <branch>:elsewhere). Commits a remote already has
+	# are shared history, not the branch's own, so those still go through.
+	for b in $(git config --get-all hooks.neverPush 2>/dev/null); do
+		if [ "$_local_ref" = "refs/heads/$b" ] ||
+			{ git merge-base --is-ancestor "$local_sha" "refs/heads/$b" 2>/dev/null &&
+				[ -z "$(git branch -r --contains "$local_sha" 2>/dev/null)" ]; }; then
+			echo "blocked: '$b' is marked never-push (git config hooks.neverPush)." >&2
+			echo >&2
+			fail=1
+			continue 2
+		fi
+	done
+
+	# ── guard 2: no secrets or personal data, on any branch ───────────────
 
 	if [ "$_remote_sha" = "$empty" ]; then
 		# New branch: inspect commits that aren't on any remote yet.
