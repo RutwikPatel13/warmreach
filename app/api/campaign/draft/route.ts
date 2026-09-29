@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { enrichPerson } from "@/src/apollo";
 import { generateCampaignVariant, type Variant, type Email } from "@/src/campaignPersonalize";
 import { classifyVariant } from "@/src/personalize";
@@ -90,7 +91,7 @@ export async function POST(req: Request) {
     auth = await getGmailAuth();
     from = await getFromAddress(auth);
   } catch (e: any) {
-    const msg = String(e?.message ?? "");
+    const msg = String(friendlyLlmError(e) || "");
     const hint = msg.includes("invalid_grant")
       ? "Gmail authorization expired. Re-run `npm run gmail:auth`, then retry."
       : `Gmail auth failed: ${msg || "unknown error"}`;
@@ -198,7 +199,7 @@ export async function POST(req: Request) {
               id: person.id,
               company: company.name,
               status: "error",
-              reason: e?.message ?? "Failed to draft.",
+              reason: friendlyLlmError(e) || "Failed to draft.",
               creditSpent,
             });
           }

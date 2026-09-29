@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { generateVariants, type Variant, type Email } from "@/src/personalize";
 import { loadStore } from "@/src/templateStore";
 import { rejectNonLocal } from "@/src/localGuard";
@@ -66,6 +67,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ variants });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Generation failed." }, { status: 500 });
+    return NextResponse.json({ error: friendlyLlmError(e) || "Generation failed." }, { status: 500 });
   }
 }

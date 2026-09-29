@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { rejectNonLocal } from "@/src/localGuard";
 import { getGmailAuth, getFromAddress, hasGmailToken, createDraft, sendDraft, deleteDraft } from "@/src/gmail";
 import { addScheduledMany, listScheduled, startScheduler, cancelByDraftIds, type ScheduleItem } from "@/src/scheduler";
@@ -70,7 +71,7 @@ export async function POST(req: Request) {
     auth = await getGmailAuth();
     from = await getFromAddress(auth);
   } catch (e: any) {
-    const msg = String(e?.message ?? "");
+    const msg = String(friendlyLlmError(e) || "");
     if (msg.includes("invalid_grant")) {
       return NextResponse.json(
         {
@@ -162,7 +163,7 @@ export async function POST(req: Request) {
         sentAt: now,
       });
     } catch (e: any) {
-      errors.push({ email: it.email, error: e?.message ?? "Failed to draft follow-up." });
+      errors.push({ email: it.email, error: friendlyLlmError(e) || "Failed to draft follow-up." });
     }
   }
 

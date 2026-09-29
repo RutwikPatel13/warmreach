@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { rejectNonLocal } from "@/src/localGuard";
 import { getGmailAuth, getFromAddress, hasGmailToken } from "@/src/gmail";
 import { outreachRows } from "@/src/tracker";
@@ -73,7 +74,7 @@ export async function POST(req: Request) {
     auth = await getGmailAuth();
     from = await getFromAddress(auth);
   } catch (e: any) {
-    const msg = String(e?.message ?? "");
+    const msg = String(friendlyLlmError(e) || "");
     if (msg.includes("invalid_grant")) {
       return NextResponse.json(
         {
@@ -119,7 +120,7 @@ export async function POST(req: Request) {
       ...(offset === 0 ? { bouncedAddresses: [...bouncedSet] } : {}),
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Scan failed." }, { status: 500 });
+    return NextResponse.json({ error: friendlyLlmError(e) || "Scan failed." }, { status: 500 });
   }
 }
 

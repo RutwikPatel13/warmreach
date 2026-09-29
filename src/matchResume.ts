@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { ANTHROPIC_API_KEY } from "./config";
 import { profile } from "./profile";
 import type { JobText } from "./jobText";
+import { readSettings } from "./watchlist";
 
 // ── Résumé ↔ role matching ──────────────────────────────────────────────────
 // One Claude call per candidate posting. The résumé PDF goes in as a document
@@ -20,6 +21,16 @@ import type { JobText } from "./jobText";
 const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 export const MATCH_MODEL = process.env.WATCH_MATCH_MODEL || "claude-opus-5";
+
+// max_tokens is a ceiling, not a charge — you pay for what's generated. It only
+// becomes a cost lever when thinking is on, because thinking tokens are billed
+// as output and draw from this same budget.
+//
+// Opus-tier models run adaptive thinking by DEFAULT (omitting `thinking` on
+// Opus 5 does not mean off), so they need real headroom or the forced tool call
+// truncates mid-object and the assessment is discarded below. Sonnet only
+// thinks when asked, so the verdict — well under 1k — fits a far smaller cap.
+const MAX_TOKENS = /opus|fable|mythos/i.test(MATCH_MODEL) ? 8192 : 2048;
 
 export interface MatchAssessment {
   score: number;
@@ -152,6 +163,11 @@ export async function matchRoleToResume(
   job: JobFacts,
   resumePath: string = profile.resumePath,
 ): Promise<MatchAssessment | null> {
+  // Final gate, at the only place in the codebase that bills Anthropic. Callers
+  // check too, but this one cannot be bypassed by a caller that forgot — which
+  // is exactly the failure that let a disabled sweep keep spending.
+  if (!readSettings().scoringEnabled) return null;
+
   const doc = resumeDocument(resumePath);
   const content: Record<string, unknown>[] = [];
   if (doc) content.push(doc);
@@ -159,10 +175,7 @@ export async function matchRoleToResume(
 
   const message = await client.messages.create({
     model: MATCH_MODEL,
-    // Adaptive thinking is ON by default on Opus 5 and draws from this same
-    // budget, so a value sized for the JSON alone truncates the tool call
-    // mid-object. Leave real headroom: the assessment itself is well under 1k.
-    max_tokens: 8192,
+    max_tokens: MAX_TOKENS,
     system: [
       {
         type: "text",

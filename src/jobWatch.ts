@@ -8,6 +8,7 @@ import {
   makeMatch,
   markSeen,
   patchWatch,
+  readSettings,
   saveMatches,
   seenFor,
   type Match,
@@ -96,6 +97,10 @@ async function sweepWatch(watch: Watch, budget: number): Promise<{ found: Match[
   const found: Match[] = [];
   let calls = 0;
   for (const posting of toScore) {
+    // Re-read the switch before every billed call, not once per run. A sweep can
+    // last minutes; turning it off should stop the spend immediately rather than
+    // at the end of the current company.
+    if (!readSettings().scoringEnabled) break;
     calls++;
     try {
       const jd = await fetchJobText(posting.url);
@@ -164,8 +169,19 @@ async function sweepWatch(watch: Watch, budget: number): Promise<{ found: Match[
  */
 export async function sweepAll(
   force = false,
-): Promise<{ swept: number; matches: number; remaining: number }> {
+): Promise<{ swept: number; matches: number; remaining: number; disabled?: boolean }> {
   if (sweeping) return { swept: 0, matches: 0, remaining: 0 };
+
+  const settings = readSettings();
+
+  // Master gate: no scoring means no Claude call, from any caller. force=true
+  // ("Check now") does NOT override this — the point of the switch is that
+  // nothing can spend while it is off.
+  if (!settings.scoringEnabled) return { swept: 0, matches: 0, remaining: 0, disabled: true };
+
+  // The timer calls with force=false; the daily check governs only that path.
+  if (!force && !settings.autoSweep) return { swept: 0, matches: 0, remaining: 0 };
+
   sweeping = true;
   try {
     const now = Date.now();
@@ -203,7 +219,7 @@ export async function sweepAll(
     if (matches > 0) notify(matches);
     // `swept` is what actually got checked, not what was due — the budget can cut
     // the run short, and the remainder is picked up on the next tick.
-    return { swept, matches, remaining: Math.max(0, due.length - swept) };
+    return { swept, matches, remaining: Math.max(0, due.length - swept), disabled: false };
   } finally {
     sweeping = false;
   }
@@ -222,11 +238,41 @@ function notify(count: number): void {
   }
 }
 
-// Idempotent, same guard as startScheduler: the interval lives on globalThis so
-// Next's dev hot-reload can't stack duplicate timers.
+// A timer registered at boot keeps calling the function instance it captured
+// then. Hot-reloading this file creates a NEW module but does NOT replace that
+// closure — so an edit adding a safety check to sweepAll does not apply to the
+// already-running timer, while the globalThis guard blocks a corrected timer
+// from taking over. That combination kept a disabled sweep running for days.
+//
+// Two defences: (1) no timer is created at all while the daily check is off, so
+// the common case has nothing running; (2) every tick re-checks a generation
+// token, so a stale timer from a previous code version retires itself instead of
+// running forever.
+const WATCHER_GENERATION = "2026-08-10a";
+
 export function startJobWatcher(): void {
-  const g = globalThis as unknown as { __warmreachJobWatch?: NodeJS.Timeout };
+  const g = globalThis as unknown as { __warmreachJobWatch?: NodeJS.Timeout; __warmreachJobWatchGen?: string };
+
+  // Retire a timer left over from an older version of this file.
+  if (g.__warmreachJobWatch && g.__warmreachJobWatchGen !== WATCHER_GENERATION) {
+    clearInterval(g.__warmreachJobWatch);
+    g.__warmreachJobWatch = undefined;
+  }
   if (g.__warmreachJobWatch) return;
-  g.__warmreachJobWatch = setInterval(() => void sweepAll().catch(() => {}), TICK_MS);
+
+  if (!readSettings().autoSweep) {
+    console.log("[jobWatch] daily check is OFF — no timer started, no Claude calls possible.");
+    return;
+  }
+
+  g.__warmreachJobWatchGen = WATCHER_GENERATION;
+  g.__warmreachJobWatch = setInterval(() => {
+    const cur = globalThis as unknown as { __warmreachJobWatch?: NodeJS.Timeout; __warmreachJobWatchGen?: string };
+    if (cur.__warmreachJobWatchGen !== WATCHER_GENERATION) {
+      if (cur.__warmreachJobWatch) clearInterval(cur.__warmreachJobWatch);
+      return;
+    }
+    void sweepAll().catch(() => {});
+  }, TICK_MS);
   void sweepAll().catch(() => {});
 }

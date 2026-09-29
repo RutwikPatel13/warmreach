@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { addWatch, listWatches, removeWatch, type WatchContact } from "@/src/watchlist";
+import { addWatch, listWatches, readSettings, removeWatch, type WatchContact } from "@/src/watchlist";
 import { rejectNonLocal } from "@/src/localGuard";
 
 export const runtime = "nodejs";
@@ -13,7 +13,9 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const forbidden = rejectNonLocal(req);
   if (forbidden) return forbidden;
-  return NextResponse.json({ watches: listWatches() });
+  // Settings ride along so the page knows in one request whether the daily
+  // check is on, rather than rendering the toggle in the wrong state first.
+  return NextResponse.json({ watches: listWatches(), settings: readSettings() });
 }
 
 export async function POST(req: Request) {

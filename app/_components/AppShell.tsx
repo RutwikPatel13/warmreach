@@ -31,12 +31,17 @@ const THEME_KEY = "warmreach:v1:theme";
 
 const NAV: { href: string; icon: string; label: string }[] = [
   { href: "/", icon: "◱", label: "Applications" },
+  { href: "/applied", icon: "⇣", label: "Applied" },
   { href: "/campaigns", icon: "◎", label: "Campaigns" },
+  { href: "/templates", icon: "✎", label: "Templates" },
   { href: "/companies", icon: "◨", label: "Companies" },
   { href: "/people", icon: "☰", label: "People" },
   { href: "/jobs", icon: "▤", label: "Open roles" },
   { href: "/matches", icon: "◉", label: "Matches" },
+  { href: "/resume", icon: "▧", label: "Résumé" },
   { href: "/followups", icon: "↩", label: "Follow-ups" },
+  { href: "/prep", icon: "◆", label: "Prep" },
+  { href: "/harvest", icon: "⛏", label: "Harvest" },
   { href: "/database", icon: "▦", label: "Database" },
 ];
 
@@ -111,7 +116,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <div className="side-label">Workspace</div>
             <div className="cmp-nav">
               {NAV.map((n) => {
-                const active = pathname === n.href;
+                // Applied owns its sub-pages (/applied/[id]); everything else matches exactly.
+                const active = n.href === "/applied" ? pathname.startsWith("/applied") : pathname === n.href;
                 return (
                   <a
                     key={n.href}
@@ -121,6 +127,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   >
                     {n.icon}&nbsp; {n.label}
                     {n.href === "/matches" && <MatchCount />}
+                    {n.href === "/applied" && <AppliedCount />}
                   </a>
                 );
               })}
@@ -185,6 +192,25 @@ function MatchCount() {
     };
   }, [pathname]);
 
+  if (count <= 0) return null;
+  return <span className="wl-navcount">{count}</span>;
+}
+
+// Applications ready to review — prepared, emails written, nothing drafted yet.
+// Same contract as MatchCount: silent on any error, hidden at zero.
+function AppliedCount() {
+  const pathname = usePathname();
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    let live = true;
+    fetch("/api/applied")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (live && d?.rows) setCount(d.rows.filter((r: { status: string }) => r.status === "review").length);
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [pathname]);
   if (count <= 0) return null;
   return <span className="wl-navcount">{count}</span>;
 }

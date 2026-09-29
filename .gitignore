@@ -11,3 +11,10 @@ tsconfig.tsbuildinfo
 # Personal — never commit
 src/profile.ts
 HANDOFF.md
+
+# Interview prep — local only, never commit
+interview-prep/
+app/pad/
+
+# /brag launch-video output — local only
+brag-output*/

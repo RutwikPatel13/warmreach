@@ -77,24 +77,60 @@ export function titlesForGroups(groupIds: string[], custom: string[] = []): stri
   return out.size ? [...out] : DEFAULT_TITLES;
 }
 
-async function post(path: string, body: unknown): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: HEADERS,
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(`Apollo POST ${path} -> ${res.status}: ${await res.text()}`);
+// ── transport ───────────────────────────────────────────────────────────────
+// One-off calls from the UI could afford to just throw. A harvest run makes
+// hundreds of calls back-to-back, where a single 429 partway through would
+// abandon the credits already spent — so retry rate limits and transient server
+// errors, and leave everything else (401, 422, a bad person id) to fail fast.
+
+const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 5;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Apollo sends Retry-After on 429s; honour it when present, otherwise back off
+// exponentially with jitter so parallel workers don't retry in lockstep.
+function backoffMs(attempt: number, retryAfter: string | null): number {
+  const ra = Number(retryAfter);
+  if (Number.isFinite(ra) && ra > 0) return Math.min(ra * 1000, 60_000);
+  return Math.min(2 ** attempt * 500, 30_000) + Math.random() * 400;
+}
+
+async function request(method: "GET" | "POST", path: string, body?: unknown): Promise<any> {
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        method,
+        headers: HEADERS,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    } catch (e: any) {
+      // Network-level failure (DNS, socket reset) — always worth another try.
+      lastErr = new Error(`Apollo ${method} ${path} -> ${e?.message ?? "network error"}`);
+      if (attempt === MAX_ATTEMPTS - 1) break;
+      await sleep(backoffMs(attempt, null));
+      continue;
+    }
+    if (res.ok) return res.json();
+
+    const text = await res.text();
+    lastErr = new Error(`Apollo ${method} ${path} -> ${res.status}: ${text}`);
+    if (!RETRY_STATUS.has(res.status) || attempt === MAX_ATTEMPTS - 1) throw lastErr;
+    await sleep(backoffMs(attempt, res.headers.get("retry-after")));
   }
-  return res.json();
+  throw lastErr ?? new Error(`Apollo ${method} ${path} failed`);
+}
+
+async function post(path: string, body: unknown): Promise<any> {
+  return request("POST", path, body);
 }
 
 async function get(path: string): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, { headers: HEADERS });
-  if (!res.ok) {
-    throw new Error(`Apollo GET ${path} -> ${res.status}: ${await res.text()}`);
-  }
-  return res.json();
+  return request("GET", path);
 }
 
 export interface Company {

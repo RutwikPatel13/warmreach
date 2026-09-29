@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { rejectNonLocal } from "@/src/localGuard";
 import { getGmailAuth, hasGmailToken } from "@/src/gmail";
 import { outreachRows, normCompany } from "@/src/tracker";
@@ -78,6 +79,6 @@ export async function POST(req: Request) {
       references: thread?.references ?? null,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Draft generation failed." }, { status: 500 });
+    return NextResponse.json({ error: friendlyLlmError(e) || "Draft generation failed." }, { status: 500 });
   }
 }

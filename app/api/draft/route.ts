@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { enrichPerson } from "@/src/apollo";
 import type { Variant, Email } from "@/src/personalize";
 import { getGmailAuth, getFromAddress, hasGmailToken, createDraft, updateDraft } from "@/src/gmail";
@@ -19,7 +20,7 @@ interface Person {
   lastName?: string | null;
   title?: string;
   variant: Variant;
-  source?: "apollo" | "hunter" | "careers";
+  source?: "apollo" | "hunter" | "careers" | "csv"; // csv = already on file
   email?: string | null;
   confidence?: number | null;
   // Set when this run REPLACES an earlier draft for the same person (a re-draft):
@@ -87,7 +88,7 @@ export async function POST(req: Request) {
     auth = await getGmailAuth();
     from = await getFromAddress(auth); // once per batch, not per draft
   } catch (e: any) {
-    const msg = String(e?.message ?? "");
+    const msg = String(friendlyLlmError(e) || "");
     if (msg.includes("invalid_grant")) {
       return NextResponse.json(
         {
@@ -124,9 +125,9 @@ export async function POST(req: Request) {
           let emailScore: number | undefined;
           let emailStatus = "";
 
-          if ((person.source === "hunter" || person.source === "careers") && person.email) {
-            // Email already known — Hunter domain search, or a generic careers inbox.
-            // Either way no Apollo enrichment, so no credit spent.
+          if ((person.source === "hunter" || person.source === "careers" || person.source === "csv") && person.email) {
+            // Email already known — Hunter domain search, a generic careers inbox,
+            // or someone already on file. No Apollo enrichment, so no credit spent.
             email = person.email;
             const last = person.lastName ?? "";
             fullName = `${firstName}${last ? " " + last : ""}`.trim() || person.email;
@@ -134,6 +135,8 @@ export async function POST(req: Request) {
             if (person.source === "careers") {
               emailSource = "careers";
               emailStatus = "careers";
+            } else if (person.source === "csv") {
+              emailStatus = "on-file";
             } else {
               emailSource = "hunter";
               emailScore = person.confidence ?? undefined;
@@ -227,7 +230,7 @@ export async function POST(req: Request) {
             creditSpent,
           });
         } catch (e: any) {
-          send({ id: person.id, status: "error", reason: e?.message ?? "Failed to draft.", creditSpent });
+          send({ id: person.id, status: "error", reason: friendlyLlmError(e) || "Failed to draft.", creditSpent });
         }
       }
       controller.close();

@@ -1,28 +1,48 @@
 "use client";
 
+// ── Database: every contact warmreach holds ─────────────────────────────────
+// Was a view over data/outreach_log.csv — i.e. only people you'd already emailed.
+// Now it reads the whole contact store (/api/contacts): the Apollo CSV exports,
+// everything harvested, the outreach log, and the watchlist referrers, deduped
+// per person. "Contacted" is one property of a contact here, not the price of
+// admission — so the outreach view is a filtered slice, not the whole page.
+//
+// Read-only. No Apollo or Gmail cost.
+
 import { useEffect, useMemo, useState } from "react";
+import { PageHeader } from "../_components/AppShell";
 
-// ── Database: everyone you've reached out to ────────────────────────────────
-// Read-only view over data/outreach_log.csv (via /api/outreach): stat tiles, a
-// couple of small single-series charts, and a searchable/sortable table. No
-// Apollo/Gmail cost. Shares the app shell + theme with the other pages.
+type Tab = "contacts" | "outreach";
+type Sort = "company" | "name" | "recent" | "title";
+type SourceFilter = "all" | "csv" | "harvest" | "outreach" | "watchlist";
+type ReachFilter = "all" | "email" | "contacted" | "uncontacted";
 
-type TypeFilter = "all" | "campaign" | "application";
-type Sort = "date" | "name" | "company";
-
-interface Row {
-  timestamp: string; company: string; role: string; name: string; title: string;
-  email: string; emailStatus: string; subject: string; draftStatus: string;
+interface Person {
+  apolloId: string | null;
+  firstName: string; lastName: string; fullName: string;
+  title: string; company: string; companyDomain: string | null;
+  email: string | null; emailStatus: string | null;
+  seniority: string | null; linkedin: string | null;
+  source: SourceFilter extends never ? never : "csv" | "outreach" | "harvest" | "watchlist";
+  addedAt: string; contactedAt: string | null;
 }
+
+interface Counts { total: number; withEmail: number; contacted: number; companies: number }
 
 const DAY = 86_400_000;
+const PAGE = 400;
 
-function fmtDate(t: string, opts?: Intl.DateTimeFormatOptions) {
+const SOURCE_LABEL: Record<string, string> = {
+  csv: "Apollo export", harvest: "Harvested", outreach: "Emailed", watchlist: "Referrer",
+};
+
+function fmtDate(t: string | null) {
+  if (!t) return "—";
   const d = new Date(t);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, opts ?? { year: "numeric", month: "short", day: "numeric" });
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 // verified/csv = confident (ok), catch-all = maybe (warn), else unknown (faint).
-function statusClass(s: string) {
+function statusClass(s: string | null) {
   const v = (s || "").toLowerCase();
   if (v === "verified" || v === "csv") return "v";
   if (v.includes("catch")) return "g";
@@ -30,161 +50,245 @@ function statusClass(s: string) {
 }
 
 export default function DatabasePage() {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [counts, setCounts] = useState<Counts | null>(null);
+  const [bySource, setBySource] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<Tab>("contacts");
   const [q, setQ] = useState("");
-  const [type, setType] = useState<TypeFilter>("all");
-  const [sort, setSort] = useState<Sort>("date");
+  const [source, setSource] = useState<SourceFilter>("all");
+  const [reach, setReach] = useState<ReachFilter>("all");
+  const [sort, setSort] = useState<Sort>("company");
+  const [limit, setLimit] = useState(PAGE);
 
   useEffect(() => {
-    fetch("/api/outreach").then((r) => r.json()).then((d) => { setRows(d.rows ?? []); setLoading(false); }).catch(() => setLoading(false));
+    fetch("/api/contacts")
+      .then((r) => r.json())
+      .then((d) => { setPeople(d.people ?? []); setCounts(d.counts ?? null); setBySource(d.bySource ?? {}); })
+      .catch(() => undefined)
+      .finally(() => setLoading(false));
   }, []);
 
+  // Outreach tab is the same data with contactedAt required — the old page's
+  // scope, now expressed as a filter rather than as a separate source of truth.
+  const scoped = useMemo(() => (tab === "outreach" ? people.filter((p) => p.contactedAt) : people), [people, tab]);
+
   const stats = useMemo(() => {
-    const emails = new Set<string>(), companies = new Set<string>(), verified = new Set<string>();
-    let thisWeek = 0, lastAt = 0; const weekAgo = Date.now() - 7 * DAY;
-    for (const r of rows) {
-      const e = r.email.toLowerCase();
-      if (e) emails.add(e);
-      if (r.company) companies.add(r.company.toLowerCase());
-      if (e && (r.emailStatus.toLowerCase() === "verified" || r.emailStatus.toLowerCase() === "csv")) verified.add(e);
-      const t = Date.parse(r.timestamp);
-      if (!Number.isNaN(t)) { if (t >= weekAgo) thisWeek++; if (t > lastAt) lastAt = t; }
+    const companies = new Set<string>();
+    let withEmail = 0, contacted = 0, thisWeek = 0;
+    const weekAgo = Date.now() - 7 * DAY;
+    for (const p of scoped) {
+      if (p.company) companies.add(p.company.toLowerCase());
+      if (p.email) withEmail++;
+      if (p.contactedAt) {
+        contacted++;
+        const t = Date.parse(p.contactedAt);
+        if (!Number.isNaN(t) && t >= weekAgo) thisWeek++;
+      }
     }
-    return { people: emails.size, companies: companies.size, logged: rows.length, thisWeek, verified: verified.size, lastAt };
-  }, [rows]);
+    return { people: scoped.length, companies: companies.size, withEmail, contacted, thisWeek };
+  }, [scoped]);
 
   const topCompanies = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of rows) if (r.company) m.set(r.company, (m.get(r.company) ?? 0) + 1);
+    for (const p of scoped) if (p.company) m.set(p.company, (m.get(p.company) ?? 0) + 1);
     return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-  }, [rows]);
+  }, [scoped]);
   const topMax = topCompanies[0]?.[1] ?? 1;
 
   const monthly = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of rows) {
-      const t = Date.parse(r.timestamp); if (Number.isNaN(t)) continue;
-      const d = new Date(t); const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    for (const p of scoped) {
+      const stamp = tab === "outreach" ? p.contactedAt : p.addedAt;
+      const t = Date.parse(stamp ?? "");
+      if (Number.isNaN(t)) continue;
+      const d = new Date(t);
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       m.set(k, (m.get(k) ?? 0) + 1);
     }
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-12);
-  }, [rows]);
+  }, [scoped, tab]);
   const monthMax = Math.max(1, ...monthly.map((x) => x[1]));
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    let arr = rows.filter((r) => {
-      if (type === "campaign" && r.role !== "campaign") return false;
-      if (type === "application" && r.role === "campaign") return false;
+    let arr = scoped.filter((p) => {
+      if (source !== "all" && p.source !== source) return false;
+      if (reach === "email" && !p.email) return false;
+      if (reach === "contacted" && !p.contactedAt) return false;
+      if (reach === "uncontacted" && p.contactedAt) return false;
       if (!needle) return true;
-      return `${r.name} ${r.company} ${r.email} ${r.title} ${r.subject}`.toLowerCase().includes(needle);
+      return `${p.fullName} ${p.company} ${p.email ?? ""} ${p.title}`.toLowerCase().includes(needle);
     });
-    if (sort === "name") arr = [...arr].sort((a, b) => a.name.localeCompare(b.name));
-    else if (sort === "company") arr = [...arr].sort((a, b) => a.company.localeCompare(b.company) || Date.parse(b.timestamp) - Date.parse(a.timestamp));
-    // "date" keeps the server order (newest first).
-    return arr;
-  }, [rows, q, type, sort]);
-  const shown = filtered.slice(0, 500);
+    const cmp: Record<Sort, (a: Person, b: Person) => number> = {
+      company: (a, b) => a.company.localeCompare(b.company) || a.fullName.localeCompare(b.fullName),
+      name: (a, b) => a.fullName.localeCompare(b.fullName),
+      title: (a, b) => a.title.localeCompare(b.title) || a.company.localeCompare(b.company),
+      recent: (a, b) => Date.parse(b.contactedAt ?? b.addedAt) - Date.parse(a.contactedAt ?? a.addedAt),
+    };
+    return [...arr].sort(cmp[sort]);
+  }, [scoped, q, source, reach, sort]);
+
+  useEffect(() => { setLimit(PAGE); }, [q, source, reach, sort, tab]);
+  const shown = filtered.slice(0, limit);
+
+  const csvHref = useMemo(() => {
+    const head = "name,title,company,email,email_status,source,contacted_at,linkedin";
+    const esc = (v: string) => `"${(v ?? "").replace(/"/g, '""')}"`;
+    const body = filtered
+      .map((p) => [p.fullName, p.title, p.company, p.email ?? "", p.emailStatus ?? "", p.source, p.contactedAt ?? "", p.linkedin ?? ""].map(esc).join(","))
+      .join("\n");
+    return `data:text/csv;charset=utf-8,${encodeURIComponent(`${head}\n${body}`)}`;
+  }, [filtered]);
 
   return (
-    <div className="workspace-inner">
-          <div className="main-top">
-            <div className="main-co">
-              <h1>Database</h1>
-              <div className="cmp-sub">Everyone you&apos;ve reached out to — across Applications and Campaigns.</div>
+    <div className="workspace-inner wide">
+      <PageHeader
+        title="Database"
+        subtitle={
+          tab === "contacts"
+            ? "Every contact warmreach holds — Apollo exports, harvested people, everyone you've emailed, and your referrers."
+            : "Everyone you've actually reached out to — across Applications and Campaigns."
+        }
+      />
+
+      <div className="cmp-seg db-tabs">
+        <button type="button" className={tab === "contacts" ? "on" : ""} onClick={() => setTab("contacts")}>
+          Contacts {counts && <span className="db-tab-n">{counts.total.toLocaleString()}</span>}
+        </button>
+        <button type="button" className={tab === "outreach" ? "on" : ""} onClick={() => setTab("outreach")}>
+          Outreach {counts && <span className="db-tab-n">{counts.contacted.toLocaleString()}</span>}
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="meta">Loading your contacts…</p>
+      ) : people.length === 0 ? (
+        <p className="meta">No contacts yet. Drop an Apollo export in data/contacts/, or run a harvest.</p>
+      ) : (
+        <>
+          <div className="cmp-stats">
+            <div className="cmp-stat"><div className="k">{tab === "outreach" ? "People reached" : "People"}</div><div className="v tnum">{stats.people.toLocaleString()}</div></div>
+            <div className="cmp-stat"><div className="k">Companies</div><div className="v tnum">{stats.companies.toLocaleString()}</div></div>
+            <div className="cmp-stat ok"><div className="k">With an email</div><div className="v tnum">{stats.withEmail.toLocaleString()}</div></div>
+            <div className="cmp-stat"><div className="k">Contacted</div><div className="v tnum">{stats.contacted.toLocaleString()}</div></div>
+            <div className="cmp-stat accent"><div className="k">This week</div><div className="v tnum">{stats.thisWeek.toLocaleString()}</div></div>
+          </div>
+
+          <div className="db-charts">
+            <div className="card db-chart">
+              <div className="db-chart-head">Top companies <span className="meta">by {tab === "outreach" ? "outreach" : "contacts held"}</span></div>
+              <div className="db-bars">
+                {topCompanies.map(([name, count]) => (
+                  <div className="db-bar-row" key={name} title={`${name}: ${count}`}>
+                    <span className="db-bar-label" title={name}>{name}</span>
+                    <span className="db-bar-track"><span className="db-bar-fill" style={{ width: `${Math.max(3, (count / topMax) * 100)}%` }} /></span>
+                    <span className="db-bar-val tnum">{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="card db-chart">
+              <div className="db-chart-head">
+                {tab === "outreach" ? "Outreach over time" : "Contacts added"} <span className="meta">last {monthly.length} months · peak {monthMax}</span>
+              </div>
+              <div className="db-months" role="img" aria-label="Monthly counts">
+                {monthly.map(([k, count]) => {
+                  const [y, mo] = k.split("-");
+                  const label = new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: "short" });
+                  return (
+                    <div className="db-month" key={k} title={`${label} ${y}: ${count}`}>
+                      <span className="db-month-track"><span className="db-month-bar" style={{ height: `${Math.max(2, (count / monthMax) * 100)}%` }} /></span>
+                      <span className="db-month-lbl">{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
-          {loading ? (
-            <p className="meta">Loading your outreach…</p>
-          ) : rows.length === 0 ? (
-            <p className="meta">No outreach logged yet. Draft some emails in Applications or Campaigns and they&apos;ll show up here.</p>
-          ) : (
-            <>
-              <div className="cmp-stats">
-                <div className="cmp-stat"><div className="k">People reached</div><div className="v tnum">{stats.people.toLocaleString()}</div></div>
-                <div className="cmp-stat"><div className="k">Companies</div><div className="v tnum">{stats.companies.toLocaleString()}</div></div>
-                <div className="cmp-stat"><div className="k">Outreach logged</div><div className="v tnum">{stats.logged.toLocaleString()}</div></div>
-                <div className="cmp-stat accent"><div className="k">This week</div><div className="v tnum">{stats.thisWeek.toLocaleString()}</div></div>
-                <div className="cmp-stat ok"><div className="k">Verified emails</div><div className="v tnum">{stats.verified.toLocaleString()}</div></div>
+          <div className="card">
+            <div className="db-controls">
+              <input className="db-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, company, email, title…" />
+
+              {tab === "contacts" && (
+                <div className="cmp-seg">
+                  {(["all", "csv", "harvest", "outreach", "watchlist"] as SourceFilter[]).map((s) => (
+                    <button type="button" key={s} className={source === s ? "on" : ""} onClick={() => setSource(s)}
+                      title={s === "all" ? "Every source" : `${SOURCE_LABEL[s]} — ${(bySource[s] ?? 0).toLocaleString()}`}>
+                      {s === "all" ? "All" : SOURCE_LABEL[s]}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="cmp-seg">
+                {(["all", "email", "contacted", "uncontacted"] as ReachFilter[]).map((r) => (
+                  <button type="button" key={r} className={reach === r ? "on" : ""} onClick={() => setReach(r)}>
+                    {r === "all" ? "Any" : r === "email" ? "Has email" : r === "contacted" ? "Contacted" : "Not yet"}
+                  </button>
+                ))}
               </div>
 
-              <div className="db-charts">
-                <div className="card db-chart">
-                  <div className="db-chart-head">Top companies <span className="meta">by outreach</span></div>
-                  <div className="db-bars">
-                    {topCompanies.map(([name, n]) => (
-                      <div className="db-bar-row" key={name} title={`${name}: ${n}`}>
-                        <span className="db-bar-label" title={name}>{name}</span>
-                        <span className="db-bar-track"><span className="db-bar-fill" style={{ width: `${Math.max(3, (n / topMax) * 100)}%` }} /></span>
-                        <span className="db-bar-val tnum">{n}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+              <label className="db-sort">Sort
+                <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
+                  <option value="company">Company</option>
+                  <option value="name">Name</option>
+                  <option value="title">Title</option>
+                  <option value="recent">Most recent</option>
+                </select>
+              </label>
 
-                <div className="card db-chart">
-                  <div className="db-chart-head">Outreach over time <span className="meta">last {monthly.length} months · peak {monthMax}</span></div>
-                  <div className="db-months" role="img" aria-label="Monthly outreach counts">
-                    {monthly.map(([k, n]) => {
-                      const [y, mo] = k.split("-");
-                      const label = new Date(Number(y), Number(mo) - 1, 1).toLocaleDateString(undefined, { month: "short" });
-                      return (
-                        <div className="db-month" key={k} title={`${label} ${y}: ${n}`}>
-                          <span className="db-month-track"><span className="db-month-bar" style={{ height: `${Math.max(2, (n / monthMax) * 100)}%` }} /></span>
-                          <span className="db-month-lbl">{label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
+              <a className="btn-xs db-export" href={csvHref} download="warmreach-contacts.csv">Export CSV</a>
+              <span className="meta db-count">
+                {filtered.length.toLocaleString()} {filtered.length === 1 ? "person" : "people"}
+                {filtered.length > shown.length ? ` · showing ${shown.length.toLocaleString()}` : ""}
+              </span>
+            </div>
 
-              <div className="card">
-                <div className="db-controls">
-                  <input className="db-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, company, email, title…" />
-                  <div className="cmp-seg">
-                    {(["all", "campaign", "application"] as TypeFilter[]).map((t) => (
-                      <button type="button" key={t} className={type === t ? "on" : ""} onClick={() => setType(t)}>{t === "all" ? "All" : t === "campaign" ? "Campaigns" : "Applications"}</button>
-                    ))}
-                  </div>
-                  <label className="db-sort">Sort
-                    <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
-                      <option value="date">Newest</option>
-                      <option value="name">Name</option>
-                      <option value="company">Company</option>
-                    </select>
-                  </label>
-                  <span className="meta db-count">{filtered.length.toLocaleString()} {filtered.length === 1 ? "person" : "people"}{filtered.length > shown.length ? ` · showing ${shown.length}` : ""}</span>
+            <div className="db-table-wrap">
+              <table className="db-table">
+                <thead>
+                  <tr>
+                    <th>Name</th><th>Title</th><th>Company</th><th>Email</th>
+                    <th>Source</th><th>{tab === "outreach" ? "Contacted" : "Last touch"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((p, i) => (
+                    <tr key={`${p.apolloId ?? p.email ?? p.fullName}-${i}`}>
+                      <td className="db-name">
+                        {p.fullName || "—"}
+                        {p.linkedin && <a className="db-li" href={p.linkedin} target="_blank" rel="noreferrer" title="LinkedIn">in</a>}
+                      </td>
+                      <td className="db-title">{p.title || "—"}</td>
+                      <td>{p.company || "—"}</td>
+                      <td className="db-email">
+                        {p.email ? (
+                          <><span className={`db-dot ${statusClass(p.emailStatus)}`} title={p.emailStatus || "unknown"} />{p.email}</>
+                        ) : (
+                          <span className="meta">not revealed</span>
+                        )}
+                      </td>
+                      <td><span className={`tag src-${p.source}`}>{SOURCE_LABEL[p.source]}</span></td>
+                      <td className="db-date mono">{fmtDate(p.contactedAt ?? p.addedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filtered.length === 0 && <p className="meta db-empty">No matches for “{q}”.</p>}
+              {filtered.length > shown.length && (
+                <div className="db-more">
+                  <button type="button" className="ghost" onClick={() => setLimit((l) => l + PAGE)}>
+                    Show {Math.min(PAGE, filtered.length - shown.length).toLocaleString()} more
+                  </button>
                 </div>
-
-                <div className="db-table-wrap">
-                  <table className="db-table">
-                    <thead>
-                      <tr><th>Name</th><th>Title</th><th>Company</th><th>Email</th><th>Type</th><th>Date</th></tr>
-                    </thead>
-                    <tbody>
-                      {shown.map((r, i) => (
-                        <tr key={`${r.email}-${r.timestamp}-${i}`}>
-                          <td className="db-name">{r.name || "—"}</td>
-                          <td className="db-title">{r.title || "—"}</td>
-                          <td>{r.company || "—"}</td>
-                          <td className="db-email">
-                            <span className={`db-dot ${statusClass(r.emailStatus)}`} title={r.emailStatus || "unknown"} />
-                            {r.email || "—"}
-                          </td>
-                          <td>{r.role === "campaign" ? <span className="tag recruiter">Campaign</span> : <span className="tag engineering" title={r.role}>Application</span>}</td>
-                          <td className="db-date mono">{fmtDate(r.timestamp, { month: "short", day: "numeric", year: "numeric" })}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {filtered.length === 0 && <p className="meta" style={{ padding: 16 }}>No matches for “{q}”.</p>}
-                </div>
-              </div>
-            </>
-          )}
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

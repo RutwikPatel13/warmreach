@@ -20,6 +20,7 @@ const BLOCKED_HOSTS = [/(^|\.)linkedin\.com$/i, /(^|\.)glassdoor\./i, /(^|\.)ind
 export interface JobText {
   text: string;
   source: string; // hostname the text came from, shown on the match card
+  title?: string; // the posting's own title, when the board's API returns one
 }
 
 function hostOf(url: string): string | null {
@@ -72,21 +73,21 @@ function htmlToText(html: string): string {
 //
 // One board fetch serves every posting from that company in a sweep, so the
 // response is memoized for the run.
-const ashbyBoards = new Map<string, { at: number; jobs: Map<string, string> }>();
+const ashbyBoards = new Map<string, { at: number; jobs: Map<string, { text: string; title?: string }> }>();
 const ASHBY_TTL_MS = 10 * 60 * 1000;
 
-async function ashbyBoard(org: string): Promise<Map<string, string>> {
+async function ashbyBoard(org: string): Promise<Map<string, { text: string; title?: string }>> {
   const hit = ashbyBoards.get(org);
   if (hit && Date.now() - hit.at < ASHBY_TTL_MS) return hit.jobs;
 
   const res = await fetch(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(org)}`, {
     headers: { Accept: "application/json" },
   });
-  const jobs = new Map<string, string>();
+  const jobs = new Map<string, { text: string; title?: string }>();
   if (res.ok) {
-    const data = (await res.json()) as { jobs?: { id?: string; descriptionPlain?: string }[] };
+    const data = (await res.json()) as { jobs?: { id?: string; title?: string; descriptionPlain?: string }[] };
     for (const j of data.jobs ?? []) {
-      if (j.id && j.descriptionPlain) jobs.set(j.id, j.descriptionPlain);
+      if (j.id && j.descriptionPlain) jobs.set(j.id, { text: j.descriptionPlain, title: j.title });
     }
   }
   ashbyBoards.set(org, { at: Date.now(), jobs });
@@ -100,9 +101,103 @@ async function fetchAshby(url: string): Promise<JobText | null> {
   if (!org || !jobId) return null;
 
   const board = await ashbyBoard(org);
-  const text = board.get(jobId);
-  if (!text || text.length < 400) return null;
-  return { text: text.slice(0, MAX_CHARS), source: "jobs.ashbyhq.com" };
+  const hit = board.get(jobId);
+  if (!hit || hit.text.length < 400) return null;
+  return { text: hit.text.slice(0, MAX_CHARS), source: "jobs.ashbyhq.com", title: hit.title };
+}
+
+// ── Greenhouse, Lever, Workday ──────────────────────────────────────────────
+// The other three boards behind most applications. Each has a public JSON
+// endpoint that returns the description and the real title, which the HTML path
+// can't: Greenhouse's embed/job_app link is the application FORM (no JD), a
+// Lever /apply link is the same, and Workday pages are an empty SPA shell.
+
+async function getJson(url: string, init?: RequestInit): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal, headers: { Accept: "application/json", ...(init?.headers ?? {}) } });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&");
+}
+
+function finish(text: string, source: string, title?: string): JobText | null {
+  const t = text.trim();
+  if (t.length < 400) return null;
+  return { text: t.slice(0, MAX_CHARS), source, title: title?.trim() || undefined };
+}
+
+// job-boards.greenhouse.io/{board}/jobs/{id}  or  …/embed/job_app?for={board}&token={id}
+async function fetchGreenhouse(u: URL): Promise<JobText | null> {
+  let board = u.searchParams.get("for");
+  let id = u.searchParams.get("token");
+  if (!board || !id) {
+    const m = u.pathname.match(/^\/([^/]+)\/jobs\/(\d+)/);
+    if (!m) return null;
+    [, board, id] = m;
+  }
+  const data = await getJson(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board)}/jobs/${encodeURIComponent(id)}`);
+  if (!data?.content) return null;
+  // Greenhouse double-encodes: the HTML itself arrives entity-escaped.
+  return finish(htmlToText(decodeEntities(String(data.content))), "greenhouse.io", data.title);
+}
+
+// jobs.lever.co/{company}/{id}[/apply]
+async function fetchLever(u: URL): Promise<JobText | null> {
+  const [company, id] = u.pathname.split("/").filter(Boolean);
+  if (!company || !id) return null;
+  const data = await getJson(`https://api.lever.co/v0/postings/${encodeURIComponent(company)}/${encodeURIComponent(id)}`);
+  if (!data?.descriptionPlain) return null;
+  const lists = (data.lists ?? [])
+    .map((l: { text?: string; content?: string }) => `${l.text ?? ""}\n${htmlToText(l.content ?? "")}`)
+    .join("\n\n");
+  return finish([data.descriptionPlain, lists, data.additionalPlain ?? ""].join("\n\n"), "lever.co", data.text);
+}
+
+// {tenant}.wd5.myworkdayjobs.com/[en-US/]{site}/job/{location}/{slug}
+async function fetchWorkday(u: URL): Promise<JobText | null> {
+  const tenant = u.hostname.split(".")[0];
+  const parts = u.pathname.split("/").filter(Boolean);
+  if (/^[a-z]{2}-[A-Z]{2}$/.test(parts[0] ?? "")) parts.shift();
+  const jobAt = parts.indexOf("job");
+  if (jobAt < 1) return null;
+  const site = parts[jobAt - 1];
+  const rest = parts.slice(jobAt).join("/");
+  const data = await getJson(`https://${u.hostname}/wday/cxs/${tenant}/${site}/${rest}`);
+  const info = data?.jobPostingInfo;
+  if (!info?.jobDescription) return null;
+  return finish(htmlToText(String(info.jobDescription)), "myworkdayjobs.com", info.title);
+}
+
+async function fetchFromBoardApi(url: string): Promise<JobText | null> {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  try {
+    if (/(^|\.)greenhouse\.io$/.test(host)) return await fetchGreenhouse(u);
+    if (host === "jobs.lever.co") return await fetchLever(u);
+    if (/\.myworkdayjobs\.com$/.test(host)) return await fetchWorkday(u);
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -119,6 +214,10 @@ export async function fetchJobText(url: string | null | undefined): Promise<JobT
       return null;
     }
   }
+
+  // Board APIs first — a miss there still falls through to the plain page fetch.
+  const viaApi = await fetchFromBoardApi(url as string);
+  if (viaApi) return viaApi;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);

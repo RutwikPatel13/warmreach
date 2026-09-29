@@ -29,7 +29,7 @@ const ROLE = "Software Engineer (Toronto)";
 const MODELS = [
   { label: "Haiku 4.5", id: "claude-haiku-4-5-20251001", in: 1, out: 5 },
   { label: "Sonnet 4.6", id: "claude-sonnet-4-6", in: 3, out: 15 },
-  { label: "Opus 4.8", id: "claude-opus-4-8", in: 15, out: 75 },
+  { label: "Opus 4.8", id: "claude-opus-4-8", in: 5, out: 25 },
 ];
 
 const BUDGET = 5;

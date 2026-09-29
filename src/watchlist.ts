@@ -17,6 +17,7 @@ import path from "node:path";
 const WATCH_STORE = path.resolve("data/watchlist.json");
 const SEEN_STORE = path.resolve("data/seen_postings.json");
 const MATCH_STORE = path.resolve("data/matches.json");
+const SETTINGS_STORE = path.resolve("data/watch_settings.json");
 
 // Dismissed/asked matches older than this are pruned so the store stays small.
 const KEEP_TERMINAL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -104,6 +105,37 @@ function writeJson(file: string, value: unknown): void {
 
 function id(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ── settings ────────────────────────────────────────────────────────────────
+
+export interface WatchSettings {
+  /** When false, only an explicit "Check now" sweeps. Nothing runs on a timer. */
+  autoSweep: boolean;
+  /**
+   * The master switch for Claude spend. When false NOTHING scores a role — not
+   * the timer, not "Check now". This is separate from autoSweep on purpose: a
+   * single flag that some code paths forget to check is how the daily sweep kept
+   * billing after it was supposedly disabled.
+   */
+  scoringEnabled: boolean;
+}
+
+// Off by default. The background sweep is the only part of this feature that
+// spends money without you asking it to, so it has to be opted into rather than
+// out of — a watchlist that quietly bills you is a worse default than one that
+// waits to be asked.
+const DEFAULT_SETTINGS: WatchSettings = { autoSweep: false, scoringEnabled: false };
+
+export function readSettings(): WatchSettings {
+  const raw = readJson<Partial<WatchSettings>>(SETTINGS_STORE, {});
+  return { ...DEFAULT_SETTINGS, ...(raw && typeof raw === "object" ? raw : {}) };
+}
+
+export function writeSettings(patch: Partial<WatchSettings>): WatchSettings {
+  const next = { ...readSettings(), ...patch };
+  writeJson(SETTINGS_STORE, next);
+  return next;
 }
 
 // ── watches ─────────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { friendlyLlmError } from "@/src/apiErrors";
 import { resolveCompanyOptions, searchContacts, titlesForGroups } from "@/src/apollo";
 import { hunterConfigured, domainSearch } from "@/src/hunter";
 import { careersInboxes } from "@/src/careers";
@@ -142,6 +143,6 @@ export async function POST(req: Request) {
       candidates,
     });
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Search failed." }, { status: 500 });
+    return NextResponse.json({ error: friendlyLlmError(e) || "Search failed." }, { status: 500 });
   }
 }

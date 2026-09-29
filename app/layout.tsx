@@ -9,7 +9,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    // Browser extensions (Tsenta's overlay, password managers) stamp attributes
+    // onto <html> before React loads. This silences that one element's attribute
+    // mismatch only — it doesn't reach children, so real hydration bugs still show.
+    <html lang="en" suppressHydrationWarning>
       <body>
         <AppShell>{children}</AppShell>
       </body>

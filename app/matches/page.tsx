@@ -108,6 +108,7 @@ export default function MatchesPage() {
   const [tab, setTab] = useState<Tab>("new");
   const [matches, setMatches] = useState<Match[] | null>(null);
   const [watches, setWatches] = useState<Watch[] | null>(null);
+  const [autoSweep, setAutoSweep] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sweeping, setSweeping] = useState(false);
   const [sweepNote, setSweepNote] = useState<string | null>(null);
@@ -123,6 +124,7 @@ export default function MatchesPage() {
       if (!w.ok) throw new Error(wd.error ?? "Could not load the watchlist.");
       setMatches(md.matches ?? []);
       setWatches(wd.watches ?? []);
+      setAutoSweep(Boolean(wd.settings?.autoSweep));
     } catch (e: any) {
       setError(e.message);
       setMatches([]);
@@ -154,6 +156,21 @@ export default function MatchesPage() {
   function dismiss(m: Match) {
     setUndo({ id: m.id, title: m.title });
     void setStatus(m.id, "dismissed");
+  }
+
+  async function toggleAuto(next: boolean) {
+    setAutoSweep(next); // optimistic — the switch should feel immediate
+    try {
+      const r = await fetch("/api/watchlist/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autoSweep: next }),
+      });
+      if (!r.ok) throw new Error("save failed");
+    } catch {
+      setAutoSweep(!next); // put the switch back if it didn't stick
+      setError("Couldn't save that setting.");
+    }
   }
 
   async function checkNow() {
@@ -300,6 +317,8 @@ export default function MatchesPage() {
       {tab === "watching" && (
         <WatchingTab
           watches={watches ?? []}
+          autoSweep={autoSweep}
+          onToggleAuto={toggleAuto}
           adding={adding}
           onAdd={() => setAdding(true)}
           onClose={() => setAdding(false)}
@@ -509,6 +528,8 @@ function MatchCard({
 
 function WatchingTab({
   watches,
+  autoSweep,
+  onToggleAuto,
   adding,
   onAdd,
   onClose,
@@ -516,6 +537,8 @@ function WatchingTab({
   onRemove,
 }: {
   watches: Watch[];
+  autoSweep: boolean;
+  onToggleAuto: (next: boolean) => void;
   adding: boolean;
   onAdd: () => void;
   onClose: () => void;
@@ -532,12 +555,26 @@ function WatchingTab({
             <div>
               <div className="wl-addbar-t">Watch a company</div>
               <div className="wl-addbar-s">
-                Checked once a day. Adding one costs nothing — no Apollo credits, no model calls.
+                Adding one costs nothing — no Apollo credits, no model calls.
               </div>
             </div>
             <button type="button" className="btn-link-primary" onClick={onAdd}>
               Add a company
             </button>
+          </div>
+
+          <div className="wl-auto">
+            <label className="wl-auto-main">
+              <input type="checkbox" checked={autoSweep} onChange={(e) => onToggleAuto(e.target.checked)} />
+              <span>
+                <span className="wl-auto-t">Check these companies daily</span>
+                <span className="wl-auto-s">
+                  {autoSweep
+                    ? "Runs once a day in the background and scores new roles with Claude — this is the only part that costs anything."
+                    : "Off. Nothing runs on its own; use Check now when you want to look. No Apollo credits either way."}
+                </span>
+              </span>
+            </label>
           </div>
         </div>
       )}

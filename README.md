@@ -78,6 +78,39 @@ Without this, the tool prints the emails so you can paste them. To auto-create d
 5. Save it as `credentials/credentials.json`.
 6. `npm run gmail:auth` (opens a browser once; saves `credentials/token.json`).
 
+## Résumé tailor (`/resume`)
+
+Point it at a job description and it rewrites your one-page LaTeX résumé to fit
+that role — without inventing anything and without pushing you onto a second
+page. Editor on one side, the real compiled PDF on the other (side-by-side or
+stacked, for a landscape or portrait monitor).
+
+Open `/resume` and your one-pager is already there, compiled — it's the first
+entry in the sidebar and edits `data/resume/base.tex` in place. To tailor: paste
+the posting into the **Tailor** tab on the right, fill in company and role, and
+press the button. From the base one-pager that forks a copy filed under that
+role rather than touching your master; from a role résumé it re-tailors in
+place. Review the diffs, tick the ones you want, Apply.
+
+Two guarantees do the work:
+
+- **Nothing is invented.** Every bullet must come from `data/resume/master.json`,
+  a bank built from your own master résumé and one-pager. A suggestion that
+  can't name the bank entry it came from is dropped before it reaches the page.
+- **The page doesn't move.** Each bullet's line count and character budget are
+  measured by typesetting it at its real width, not estimated. Proposed rewrites
+  are measured the same way *before* they're applied, and anything that missed
+  is sent back for another pass — so a bullet can't silently grow a line.
+
+Requires a LaTeX engine: `brew install tectonic` (≈50 MB; the first compile
+fetches packages, later ones take ~0.5s). `brew install poppler` is optional and
+enables the copy-paste test — it pulls the text back out of the finished PDF the
+way a résumé parser would, which is what catches the fi/fl ligature trap where
+"workflow" renders perfectly and extracts as an unsearchable ligature codepoint.
+
+Everything on the page is free and local except the **Tailor** button, which is
+one Sonnet call plus narrow retries (~5–10¢ per role).
+
 ## Layout
 
 - `app/` — Next.js web app (UI + local-only API routes)
@@ -87,6 +120,11 @@ Without this, the tool prints the emails so you can paste them. To auto-create d
 - `src/gmail.ts` — OAuth + draft creation/sending
 - `src/templateStore.ts` — saved email templates (`data/templates.json`)
 - `src/tracker.ts` — CSV log + dedupe
+- `src/latexEngine.ts` — compiles the résumé, reads the engine's own log
+- `src/texDoc.ts` — parses the .tex into bullets, splices edits back by offset
+- `src/texFit.ts` — measures line counts and fill by typesetting each fragment
+- `src/resumeTailor.ts` — the JD → bullets model call, bounded by the bank
+- `src/resumeAts.ts` — ATS checks, run against the extracted PDF text
 - `src/profile.ts` — **your details** (git-ignored; copy from `profile.example.ts`)
 - `src/index.ts` — the CLI
 

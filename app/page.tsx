@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCredits } from "./_components/credits";
 import { SidebarExtra } from "./_components/AppShell";
+import { fillPlaceholders, sameEmail, splitPlaceholders, templateWarning } from "@/src/templateLint";
 
 type Variant = "recruiter" | "engineering";
 
@@ -16,7 +17,7 @@ interface Candidate {
   firstName: string;
   lastName?: string | null;
   title: string;
-  source?: "apollo" | "hunter" | "careers";
+  source?: "apollo" | "hunter" | "careers" | "csv"; // csv = already on file (free)
   email?: string | null;
   confidence?: number | null;
   fit?: Fit | null;
@@ -67,6 +68,7 @@ interface SavedTemplate {
   id: string;
   name: string;
   variants: Record<Variant, Email>;
+  linked?: boolean; // "same email for both" — set on the Templates page
 }
 
 interface Library {
@@ -215,6 +217,9 @@ function toLocalInputValue(d: Date): string {
 // ── localStorage persistence (SSR-safe) ─────────────────────────────────────
 const NS = "warmreach:v1:";
 const TABS_KEY = NS + "tabs";
+// Tsenta application id → the workspace tab it was opened into, so opening the
+// same application twice switches to its tab instead of duplicating it.
+const TSENTA_KEY = NS + "tsenta";
 const wsKey = (id: number) => `${NS}ws:${id}`;
 
 // One-time migration from the pre-rename namespace so existing tabs survive.
@@ -281,6 +286,8 @@ interface WorkspaceSnapshot {
   results: Record<string, ResultLine>;
   sentIds: string[];
   resumePath: string;
+  templateSel?: string; // saved-template id the emails were generated from ("" = scratch)
+  presetSel?: string;
 }
 
 // Gmail-style "Schedule send" popover: three quick picks plus a custom
@@ -394,6 +401,23 @@ function ScheduleMenu({
 
 // In-app modal replacing native window.prompt / window.confirm — a text prompt
 // (kind: "prompt") or a yes/no confirmation (kind: "confirm").
+// Template text with {company}/{role} filled in and highlighted (Compose preview).
+function PlaceholderText({ text, fill }: { text: string; fill: { company: string; role: string } }) {
+  return (
+    <>
+      {splitPlaceholders(text, fill).map((seg, i) =>
+        seg.placeholder ? (
+          <mark key={i} className="tpl-ph">
+            {seg.text}
+          </mark>
+        ) : (
+          <span key={i}>{seg.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 type DialogState =
   | {
       kind: "prompt";
@@ -619,7 +643,8 @@ function CompanyWorkspace({
   const [instructions, setInstructions] = useState("");
   const [presetSel, setPresetSel] = useState(""); // selected preset id ("" = none)
   const [templateSel, setTemplateSel] = useState(""); // selected saved-template id
-  const [newTpl, setNewTpl] = useState<Email | null>(null); // inline template editor (null = closed)
+  const [peekVariant, setPeekVariant] = useState<Variant>("recruiter"); // Compose template preview tab (transient)
+  const [peekOpen, setPeekOpen] = useState(false); // full vs clamped template preview (transient)
   const [country, setCountry] = useState("us");
 
   const [searching, setSearching] = useState(false);
@@ -649,6 +674,11 @@ function CompanyWorkspace({
   // The resume actually attached: explicit per-tab choice, else the profile default.
   const effectiveResume = resumePath || defaultResume;
 
+  // The saved template picked in Compose, if it still exists in the library
+  // (it can be deleted on the Templates page while this tab remembers its id).
+  const selectedTpl = library.templates.find((t) => t.id === templateSel) ?? null;
+  const tplFill = { company: resolved?.name || "{company}", role: role.trim() || "{role}" };
+
   // Restore this tab's saved state after mount (localStorage is client-only).
   useEffect(() => {
     const snap = loadJSON<WorkspaceSnapshot>(storageKey);
@@ -671,6 +701,8 @@ function CompanyWorkspace({
       setResults(snap.results ?? {});
       setSentIds(new Set(snap.sentIds ?? []));
       setResumePath(snap.resumePath ?? "");
+      setTemplateSel(snap.templateSel ?? "");
+      setPresetSel(snap.presetSel ?? "");
     }
     setHydrated(true);
   }, [storageKey]);
@@ -697,6 +729,8 @@ function CompanyWorkspace({
       results,
       sentIds: [...sentIds],
       resumePath,
+      templateSel,
+      presetSel,
     } satisfies WorkspaceSnapshot);
   }, [
     hydrated,
@@ -719,6 +753,8 @@ function CompanyWorkspace({
     results,
     sentIds,
     resumePath,
+    templateSel,
+    presetSel,
   ]);
 
   const allSelected = candidates.length > 0 && selected.size === candidates.length;
@@ -944,7 +980,7 @@ function CompanyWorkspace({
           role,
           jobDescription: jd,
           promptInstructions: instructions,
-          templateId: templateSel || undefined,
+          templateId: selectedTpl?.id,
         }),
       });
       const data = await res.json();
@@ -963,7 +999,7 @@ function CompanyWorkspace({
 
   // ── prompt presets + saved templates (shared library, data/templates.json) ──
 
-  async function mutateLibrary(method: "POST" | "DELETE", payload: unknown) {
+  async function mutateLibrary(method: "POST" | "PATCH" | "DELETE", payload: unknown) {
     const res = await fetch("/api/templates", {
       method,
       headers: { "Content-Type": "application/json" },
@@ -975,10 +1011,19 @@ function CompanyWorkspace({
     return data as Library;
   }
 
-  function pickPreset(id: string) {
-    setPresetSel(id);
+  // Preset chips: switching one on loads its instructions into the box (one at
+  // a time); switching it off clears the box only if it still holds that
+  // preset's text untouched, so hand edits are never thrown away.
+  function togglePreset(id: string) {
     const preset = library.presets.find((p) => p.id === id);
-    if (preset) setInstructions(preset.instructions);
+    if (!preset) return;
+    if (presetSel === id) {
+      setPresetSel("");
+      if (instructions === preset.instructions) setInstructions("");
+    } else {
+      setPresetSel(id);
+      setInstructions(preset.instructions);
+    }
   }
 
   function saveAsPreset() {
@@ -1011,6 +1056,13 @@ function CompanyWorkspace({
     return out;
   }
 
+  function tokenizedVariants(t: Record<Variant, Email>): Record<Variant, Email> {
+    return {
+      recruiter: { subject: tokenize(t.recruiter.subject), body: tokenize(t.recruiter.body) },
+      engineering: { subject: tokenize(t.engineering.subject), body: tokenize(t.engineering.body) },
+    };
+  }
+
   function saveAsTemplate() {
     if (!templates) return;
     const t = templates;
@@ -1023,45 +1075,9 @@ function CompanyWorkspace({
       onSubmit: async (name) => {
         setError(null);
         try {
-          await mutateLibrary("POST", {
-            kind: "template",
-            name,
-            variants: {
-              recruiter: { subject: tokenize(t.recruiter.subject), body: tokenize(t.recruiter.body) },
-              engineering: { subject: tokenize(t.engineering.subject), body: tokenize(t.engineering.body) },
-            },
-          });
-        } catch (err: any) {
-          setError(err.message);
-        }
-      },
-    });
-  }
-
-  // Hand-written template from the inline editor: one example email, stored as
-  // both variants — the AUDIENCE line in the adapt prompt handles the
-  // recruiter-vs-engineering tone difference at generation time.
-  function saveNewTemplate() {
-    if (!newTpl) return;
-    const tpl = newTpl;
-    setDialog({
-      kind: "prompt",
-      title: "Save template",
-      message: "Name this template so you can reuse it. An existing name is overwritten.",
-      placeholder: "e.g. Referral ask",
-      confirmLabel: "Save template",
-      onSubmit: async (name) => {
-        setError(null);
-        try {
-          const variant = { subject: tokenize(tpl.subject), body: tokenize(tpl.body) };
-          const lib = await mutateLibrary("POST", {
-            kind: "template",
-            name,
-            variants: { recruiter: variant, engineering: { ...variant } },
-          });
-          const saved = lib.templates.find((t) => t.name.toLowerCase() === name.toLowerCase());
+          const lib = await mutateLibrary("POST", { kind: "template", name, variants: tokenizedVariants(t) });
+          const saved = lib.templates.find((x) => x.name.toLowerCase() === name.trim().toLowerCase());
           if (saved) setTemplateSel(saved.id);
-          setNewTpl(null);
         } catch (err: any) {
           setError(err.message);
         }
@@ -1069,21 +1085,27 @@ function CompanyWorkspace({
     });
   }
 
-  function deleteSaved(kind: "preset" | "template", id: string) {
-    const list = kind === "preset" ? library.presets : library.templates;
-    const name = list.find((x) => x.id === id)?.name ?? "this item";
+  // "Update “Name”": writes the edited emails back over the template they were
+  // generated from, with this company and role turned back into placeholders.
+  function updateSelectedTemplate() {
+    if (!templates || !selectedTpl) return;
+    const target = selectedTpl;
+    const variants = tokenizedVariants(templates);
     setDialog({
       kind: "confirm",
-      title: `Delete ${kind}`,
-      message: `Delete “${name}”? This can't be undone.`,
-      confirmLabel: "Delete",
-      danger: true,
+      title: `Update “${target.name}”`,
+      message: `Replace the saved “${target.name}” with these two emails? ${resolved?.name ?? "The company"} and the role are turned back into {company} and {role}.`,
+      confirmLabel: "Update template",
       onConfirm: async () => {
         setError(null);
         try {
-          await mutateLibrary("DELETE", { kind, id });
-          if (kind === "preset" && presetSel === id) setPresetSel("");
-          if (kind === "template" && templateSel === id) setTemplateSel("");
+          await mutateLibrary("PATCH", {
+            kind: "template",
+            id: target.id,
+            variants,
+            // Two different emails can't stay "same email for both".
+            ...(target.linked && !sameEmail(variants.recruiter, variants.engineering) ? { linked: false } : {}),
+          });
         } catch (err: any) {
           setError(err.message);
         }
@@ -1372,7 +1394,10 @@ function CompanyWorkspace({
           ) : (
             <select id="resume" value={effectiveResume} onChange={(e) => setResumePath(e.target.value)}>
               {effectiveResume && !resumes.some((r) => r.path === effectiveResume) && (
-                <option value={effectiveResume}>{effectiveResume.split("/").pop()} (current)</option>
+                <option value={effectiveResume}>
+                  {effectiveResume.split("/").pop()}{" "}
+                  {effectiveResume.includes("/data/applied/resumes/") ? "(Tsenta’s tailored copy)" : "(current)"}
+                </option>
               )}
               {resumes.map((r) => (
                 <option key={r.path} value={r.path}>
@@ -1457,6 +1482,9 @@ function CompanyWorkspace({
                     </span>
                   </span>
                   <span className="p-tags">
+                    {c.source === "csv" && (
+                      <span className="cmp-src-pill" title="Already in your contacts — verified email, no Apollo credit">on file · free</span>
+                    )}
                     {c.fit && (
                       <span className={`tag fit-${c.fit.priority}`}>
                         {c.fit.priority === "high" ? "★ strong match" : "match"}
@@ -1493,98 +1521,136 @@ function CompanyWorkspace({
           </div>
           <div style={{ marginTop: 16 }}>
               <div className="row">
-                <label>Email template (optional — an example email Claude adapts to this company)</label>
-                <div className="control-row">
-                  <select
-                    value={templateSel}
-                    onChange={(e) => {
-                      setTemplateSel(e.target.value);
-                      setNewTpl(null);
-                    }}
-                  >
-                    <option value="">— no template (Claude writes from scratch) —</option>
-                    {library.templates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" className="ghost btn-sm" onClick={() => setNewTpl({ subject: "", body: "" })}>
-                    New template…
-                  </button>
-                  {templateSel && (
-                    <button
-                      type="button"
-                      className="ghost btn-sm"
-                      onClick={() => deleteSaved("template", templateSel)}
-                    >
-                      Delete
-                    </button>
-                  )}
+                <div className="tpl-pick-head">
+                  <span className="tpl-pick-label">Starting point</span>
+                  <span style={{ display: "flex", gap: 14 }}>
+                    <a href="/templates?new=1" target="_blank" rel="noopener">
+                      New template ↗
+                    </a>
+                    <a href="/templates" target="_blank" rel="noopener">
+                      Manage templates ↗
+                    </a>
+                  </span>
                 </div>
-                {newTpl && (
-                  <div className="editor" style={{ marginTop: 8 }}>
-                    <div className="editor-head">
-                      <strong>New template</strong>
-                      <span className="meta">
-                        Write an example email. No greeting line — “Hi [First name],” is added per person. Use{" "}
-                        {"{company}"} and {"{role}"} as placeholders; Claude rewrites the company-specific parts for
-                        each company you use it on.
-                      </span>
-                    </div>
-                    <label>Subject</label>
-                    <input
-                      value={newTpl.subject}
-                      onChange={(e) => setNewTpl({ ...newTpl, subject: e.target.value })}
-                      placeholder="{role} application — Jane Doe (recent CS grad)"
-                    />
-                    <label style={{ marginTop: 10 }}>Body</label>
-                    <textarea
-                      className="body-editor"
-                      value={newTpl.body}
-                      onChange={(e) => setNewTpl({ ...newTpl, body: e.target.value })}
-                      placeholder="Write the example email body here…"
-                    />
-                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                      <button
-                        type="button"
-                        onClick={saveNewTemplate}
-                        disabled={!newTpl.subject.trim() || !newTpl.body.trim()}
+                <div className="tpl-pick-grid" role="radiogroup" aria-label="Starting point">
+                  <label className={`tpl-pick${selectedTpl ? "" : " on"}`}>
+                    <span className="tpl-pick-top">
+                      <input
+                        type="radio"
+                        name={`tpl-${storageKey}`}
+                        checked={!selectedTpl}
+                        onChange={() => setTemplateSel("")}
+                      />
+                      From scratch
+                    </span>
+                    <span className="tpl-pick-sub">Claude writes both emails from your profile and the job description.</span>
+                    <span className="tpl-pick-meta">no template</span>
+                  </label>
+                  {library.templates.map((t) => {
+                    const warn = templateWarning(t.variants);
+                    const on = selectedTpl?.id === t.id;
+                    return (
+                      <label key={t.id} className={`tpl-pick${on ? " on" : ""}`}>
+                        <span className="tpl-pick-top">
+                          <input
+                            type="radio"
+                            name={`tpl-${storageKey}`}
+                            checked={on}
+                            onChange={() => {
+                              setTemplateSel(t.id);
+                              setPeekVariant("recruiter");
+                              setPeekOpen(false);
+                            }}
+                          />
+                          {t.name}
+                        </span>
+                        <span className="tpl-pick-sub">{fillPlaceholders(t.variants.recruiter.subject, tplFill)}</span>
+                        {warn ? (
+                          <span className="tpl-pick-warn">! {warn}</span>
+                        ) : (
+                          <span className="tpl-pick-meta">{t.linked ? "1 version" : "2 versions"}</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                {selectedTpl && (
+                  <div className="tpl-peek">
+                    <div className="tpl-peek-bar">
+                      {!selectedTpl.linked && (
+                        <div className="cmp-seg" role="group" aria-label="Version">
+                          {(["recruiter", "engineering"] as Variant[]).map((v) => (
+                            <button
+                              key={v}
+                              type="button"
+                              className={peekVariant === v ? "on" : ""}
+                              onClick={() => setPeekVariant(v)}
+                            >
+                              {v === "recruiter" ? "Recruiter" : "Engineering"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <span className="meta">Preview for {resolved?.name}</span>
+                      <a
+                        className="tpl-link"
+                        href={`/templates?id=${encodeURIComponent(selectedTpl.id)}`}
+                        target="_blank"
+                        rel="noopener"
                       >
-                        Save template
-                      </button>
-                      <button type="button" className="ghost" onClick={() => setNewTpl(null)}>
-                        Cancel
-                      </button>
+                        Edit “{selectedTpl.name}” ↗
+                      </a>
                     </div>
+                    <div className="tpl-peek-body">
+                      <div className="tpl-peek-subj">
+                        <PlaceholderText text={selectedTpl.variants[peekVariant].subject} fill={tplFill} />
+                      </div>
+                      <div className={`tpl-peek-text${peekOpen ? "" : " clamped"}`}>
+                        <PlaceholderText text={selectedTpl.variants[peekVariant].body} fill={tplFill} />
+                      </div>
+                    </div>
+                    <button type="button" className="tpl-peek-more" onClick={() => setPeekOpen((o) => !o)}>
+                      {peekOpen ? "Show less" : "Show full email"}
+                    </button>
                   </div>
                 )}
               </div>
               <div className="row">
-                <label>Prompt instructions (optional — steer the generated emails; save as a preset to reuse)</label>
-                <div className="control-row" style={{ marginBottom: 8 }}>
-                  <select value={presetSel} onChange={(e) => pickPreset(e.target.value)}>
-                    <option value="">— presets —</option>
-                    {library.presets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" className="ghost btn-sm" onClick={saveAsPreset} disabled={!instructions.trim()}>
-                    Save as preset…
-                  </button>
-                  {presetSel && (
-                    <button type="button" className="ghost btn-sm" onClick={() => deleteSaved("preset", presetSel)}>
-                      Delete
-                    </button>
-                  )}
+                <div className="tpl-pick-head">
+                  <label htmlFor={`instr-${storageKey}`} style={{ margin: 0 }}>
+                    Prompt instructions (optional — steer the generated emails)
+                  </label>
+                  <a href="/templates?tab=presets" target="_blank" rel="noopener">
+                    Manage presets ↗
+                  </a>
                 </div>
+                {library.presets.length > 0 && (
+                  <div className="tpl-chips">
+                    {library.presets.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={`tpl-chip${presetSel === p.id ? " on" : ""}`}
+                        aria-pressed={presetSel === p.id}
+                        title={p.instructions}
+                        onClick={() => togglePreset(p.id)}
+                      >
+                        {presetSel === p.id ? "✓" : "+"} {p.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <textarea
+                  id={`instr-${storageKey}`}
                   value={instructions}
                   onChange={(e) => setInstructions(e.target.value)}
                   placeholder='e.g. "Keep it under 120 words" or "Mention my Next.js side project". Wins over the built-in rules when they conflict.'
                 />
+                <div style={{ marginTop: 8 }}>
+                  <button type="button" className="ghost btn-sm" onClick={saveAsPreset} disabled={!instructions.trim()}>
+                    Save as preset…
+                  </button>
+                </div>
               </div>
               <button type="button" onClick={generateEmails} disabled={generating || selected.size === 0}>
                 {generating && <span className="spinner" />}
@@ -1592,8 +1658,8 @@ function CompanyWorkspace({
                   ? "Generating…"
                   : templates
                     ? "Regenerate emails"
-                    : templateSel
-                      ? "Generate from template"
+                    : selectedTpl
+                      ? `Generate from “${selectedTpl.name}”`
                       : "Generate emails"}
               </button>
               <span className="meta" style={{ marginLeft: 12 }}>
@@ -1613,8 +1679,13 @@ function CompanyWorkspace({
             </span>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <span className="meta">Greeting “Hi [First name],” is added per person automatically.</span>
+              {selectedTpl && (
+                <button type="button" className="ghost" onClick={updateSelectedTemplate}>
+                  Update “{selectedTpl.name}”
+                </button>
+              )}
               <button type="button" className="ghost" onClick={saveAsTemplate}>
-                Save as template…
+                Save as new template…
               </button>
             </div>
           </div>
@@ -1795,13 +1866,19 @@ export default function Page() {
       .catch(() => {});
   }, []);
 
-  // Fetch the preset/template library once (shared by every tab; mutations
-  // return the updated store, which workspaces push back via onLibraryChange).
+  // Fetch the preset/template library (shared by every tab; mutations return
+  // the updated store, which workspaces push back via onLibraryChange). It is
+  // refetched when the window regains focus: the Compose links open the
+  // Templates page in a new browser tab, and edits made there should show here.
   useEffect(() => {
-    fetch("/api/templates")
-      .then((r) => r.json())
-      .then((d) => setLibrary({ presets: d.presets ?? [], templates: d.templates ?? [] }))
-      .catch(() => {});
+    const load = () =>
+      fetch("/api/templates")
+        .then((r) => r.json())
+        .then((d) => setLibrary({ presets: d.presets ?? [], templates: d.templates ?? [] }))
+        .catch(() => {});
+    load();
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
   }, []);
 
   // Lifetime outreach totals for the pre-search stat strip (refreshed on mount).
@@ -1812,13 +1889,78 @@ export default function Page() {
   // Restore tabs after mount (localStorage isn't available during SSR / first paint).
   useEffect(() => {
     const saved = loadJSON<TabsSnapshot>(TABS_KEY);
-    if (saved?.tabs?.length) {
-      setTabs(saved.tabs);
-      setActiveId(saved.tabs.some((t) => t.id === saved.activeId) ? saved.activeId : saved.tabs[0].id);
-      nextId.current = saved.nextId ?? Math.max(...saved.tabs.map((t) => t.id)) + 1;
+    const restored = saved?.tabs?.length ? saved.tabs : null;
+    if (restored) {
+      setTabs(restored);
+      setActiveId(restored.some((t) => t.id === saved!.activeId) ? saved!.activeId : restored[0].id);
+      nextId.current = saved!.nextId ?? Math.max(...restored.map((t) => t.id)) + 1;
     }
     setHydrated(true);
+    void importTsenta(restored ?? []);
   }, []);
+
+  // Tsenta applications arrive as workspaces on their own. On every load this
+  // claims each prepared application the page hasn't seen (they stop at step 2:
+  // people found and picked, no emails), saves it under a fresh tab id BEFORE
+  // the tab exists — so it restores on mount exactly like a saved tab — and
+  // adds the tabs. ?tsenta=<id> (the Applied list's "Open") also focuses one.
+  // Existing tabs are never touched; a lone empty "New company" tab is replaced.
+  async function importTsenta(restored: Tab[]) {
+    const wanted = new URLSearchParams(window.location.search).get("tsenta");
+    if (wanted) window.history.replaceState(null, "", window.location.pathname);
+
+    const current = restored.length ? restored : [{ id: 1, title: "New company" }];
+    const opened = loadJSON<Record<string, number>>(TSENTA_KEY) ?? {};
+    const hasTab = (appId: string) => opened[appId] !== undefined && current.some((t) => t.id === opened[appId]);
+    const added: Tab[] = [];
+    const add = (appId: string, workspace: WorkspaceSnapshot, logoUrl: string | null) => {
+      const id = nextId.current++;
+      saveJSON(wsKey(id), workspace);
+      opened[appId] = id;
+      added.push({ id, title: workspace.company, logoUrl, stage: 2 });
+    };
+
+    try {
+      const r = await fetch("/api/applied/claim", { method: "POST" }).then((x) => x.json());
+      for (const it of r.items ?? []) if (!hasTab(it.id)) add(it.id, it.workspace, it.logoUrl);
+    } catch {
+      /* Applied is optional — a failed claim leaves Applications as it was */
+    }
+
+    let focus: number | null = null;
+    if (wanted) {
+      if (hasTab(wanted) || added.some((t) => t.id === opened[wanted])) {
+        focus = opened[wanted];
+      } else {
+        try {
+          const r = await fetch(`/api/applied/${encodeURIComponent(wanted)}/workspace`).then((x) => x.json());
+          if (r.error) throw new Error(r.error);
+          add(wanted, r.workspace, r.logoUrl);
+          focus = opened[wanted];
+        } catch (e: any) {
+          setDialog({
+            kind: "confirm",
+            title: "Couldn’t open that application",
+            message: e?.message ?? "Try preparing it again on the Applied page.",
+            confirmLabel: "OK",
+            onConfirm: () => {},
+          });
+        }
+      }
+    }
+    if (!added.length && focus === null) return;
+    saveJSON(TSENTA_KEY, opened);
+
+    const lone = current.length === 1 ? current[0] : null;
+    const snap = lone ? loadJSON<WorkspaceSnapshot>(wsKey(lone.id)) : null;
+    const blank =
+      !!lone && added.length > 0 && lone.title === "New company" &&
+      !snap?.company && !snap?.candidates?.length && !snap?.templates && !Object.keys(snap?.results ?? {}).length;
+    if (blank) removeKey(wsKey(lone!.id));
+    setTabs((t) => [...(blank ? t.filter((x) => x.id !== lone!.id) : t), ...added]);
+    if (focus !== null) setActiveId(focus);
+    else if (blank) setActiveId(added[0].id);
+  }
 
   // Persist the tab list — only after restore, so we never clobber it on mount.
   useEffect(() => {

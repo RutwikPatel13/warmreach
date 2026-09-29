@@ -1,3 +1,4 @@
+import { friendlyLlmError } from "@/src/apiErrors";
 import { resolveCompanyOptions, searchContacts, titlesForGroups } from "@/src/apollo";
 import { classifyVariant } from "@/src/personalize";
 import { contactsForCompany } from "@/src/contacts";
@@ -179,7 +180,7 @@ export async function POST(req: Request) {
           send({ type: "company", input: c.name, company: companyPayload, source, found: foundCount, reachable: people.length, people });
         } catch (e: any) {
           unresolved++;
-          send({ type: "unresolved", input: c.name, reason: e?.message ?? "Not found in Apollo." });
+          send({ type: "unresolved", input: c.name, reason: friendlyLlmError(e) || "Not found in Apollo." });
         }
       }
 

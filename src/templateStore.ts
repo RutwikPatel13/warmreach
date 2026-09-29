@@ -16,6 +16,7 @@ export interface PromptPreset {
   name: string;
   instructions: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface SavedTemplate {
@@ -23,6 +24,10 @@ export interface SavedTemplate {
   name: string;
   variants: Record<Variant, Email>;
   createdAt: string;
+  updatedAt?: string;
+  // "Same email for both audiences": the Templates editor writes one email to
+  // both variants. Generation is unaffected — both variants are always stored.
+  linked?: boolean;
 }
 
 export interface TemplateStore {
@@ -52,6 +57,7 @@ export function savePreset(name: string, instructions: string): TemplateStore {
   const existing = store.presets.find((p) => sameName(p.name, name));
   if (existing) {
     existing.instructions = instructions;
+    existing.updatedAt = new Date().toISOString();
   } else {
     store.presets.push({
       id: crypto.randomUUID(),
@@ -69,6 +75,7 @@ export function saveTemplate(name: string, variants: Record<Variant, Email>): Te
   const existing = store.templates.find((t) => sameName(t.name, name));
   if (existing) {
     existing.variants = variants;
+    existing.updatedAt = new Date().toISOString();
   } else {
     store.templates.push({
       id: crypto.randomUUID(),
@@ -77,6 +84,49 @@ export function saveTemplate(name: string, variants: Record<Variant, Email>): Te
       createdAt: new Date().toISOString(),
     });
   }
+  writeStore(store);
+  return store;
+}
+
+export class TemplateStoreError extends Error {}
+
+// Edits by id (the Templates page), so a rename can't silently merge into a
+// different entry the way a save-by-name would. Renaming onto a name another
+// entry already uses is refused rather than overwriting it.
+function assertNameFree(items: { id: string; name: string }[], id: string, name: string) {
+  if (items.some((x) => x.id !== id && sameName(x.name, name))) {
+    throw new TemplateStoreError(`Another entry is already called “${name.trim()}”.`);
+  }
+}
+
+export function updatePreset(id: string, patch: { name?: string; instructions?: string }): TemplateStore {
+  const store = loadStore();
+  const preset = store.presets.find((p) => p.id === id);
+  if (!preset) throw new TemplateStoreError("That preset no longer exists.");
+  if (patch.name !== undefined) {
+    assertNameFree(store.presets, id, patch.name);
+    preset.name = patch.name.trim();
+  }
+  if (patch.instructions !== undefined) preset.instructions = patch.instructions;
+  preset.updatedAt = new Date().toISOString();
+  writeStore(store);
+  return store;
+}
+
+export function updateTemplate(
+  id: string,
+  patch: { name?: string; variants?: Record<Variant, Email>; linked?: boolean },
+): TemplateStore {
+  const store = loadStore();
+  const tpl = store.templates.find((t) => t.id === id);
+  if (!tpl) throw new TemplateStoreError("That template no longer exists.");
+  if (patch.name !== undefined) {
+    assertNameFree(store.templates, id, patch.name);
+    tpl.name = patch.name.trim();
+  }
+  if (patch.variants) tpl.variants = patch.variants;
+  if (patch.linked !== undefined) tpl.linked = patch.linked;
+  tpl.updatedAt = new Date().toISOString();
   writeStore(store);
   return store;
 }
