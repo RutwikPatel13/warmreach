@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 // This app runs with real Gmail/Apollo credentials but no auth of its own, so
 // state-changing routes must reject requests that didn't come from the local
 // UI. Otherwise any webpage you happen to visit could fire a cross-site POST
-// at localhost:3000 and send mail / spend Apollo credits (drive-by CSRF).
+// at localhost:3013 and send mail / spend Apollo credits (drive-by CSRF).
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
