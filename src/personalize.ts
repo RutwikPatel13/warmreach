@@ -1,10 +1,8 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { ANTHROPIC_API_KEY, ANTHROPIC_MODEL } from "./config";
+import type Anthropic from "@anthropic-ai/sdk";
+import { callTool, parseRef } from "./llm";
 import { profile } from "./profile";
 import type { Contact } from "./apollo";
 import { HUMAN_EMAIL_RULES, humanize } from "./humanRules";
-
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 export interface Email {
   subject: string;
@@ -74,36 +72,27 @@ export interface PersonalizeResult {
   ms: number;
 }
 
-// Lower-level: pick the model explicitly and get usage/latency back (for benchmarking).
+// Lower-level: get usage/latency back (for benchmarking). `model` pins one
+// provider ("gemini:gemini-3.5-flash", or a bare Claude id); omitted, the
+// configured provider chain is used.
 export async function personalizeWith(
   contact: Contact,
   role: string,
-  model: string,
+  model?: string,
   jobDescription?: string,
 ): Promise<PersonalizeResult> {
   const start = Date.now();
-  const message = await client.messages.create({
-    model,
-    max_tokens: 2048,
-    tools: [EMAIL_TOOL],
-    tool_choice: { type: "tool", name: "compose_email" },
-    messages: [{ role: "user", content: buildPrompt(contact, role, jobDescription) }],
+  const r = await callTool<{ subject: string; body: string }>({
+    tool: EMAIL_TOOL,
+    prompt: buildPrompt(contact, role, jobDescription),
+    maxTokens: 2048,
+    only: model ? parseRef(model) : undefined,
   });
-  const ms = Date.now() - start;
-
-  const toolUse = message.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Model did not return a compose_email tool call");
-  }
-  const out = toolUse.input as { subject: string; body: string };
   return {
-    email: { subject: humanize(out.subject), body: humanize(out.body) },
-    model,
-    usage: {
-      input_tokens: message.usage.input_tokens,
-      output_tokens: message.usage.output_tokens,
-    },
-    ms,
+    email: { subject: humanize(r.output.subject), body: humanize(r.output.body) },
+    model: `${r.provider}:${r.model}`,
+    usage: r.usage,
+    ms: Date.now() - start,
   };
 }
 
@@ -112,7 +101,7 @@ export async function personalize(
   role: string,
   jobDescription?: string,
 ): Promise<Email> {
-  return (await personalizeWith(contact, role, ANTHROPIC_MODEL, jobDescription)).email;
+  return (await personalizeWith(contact, role, undefined, jobDescription)).email;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -256,22 +245,11 @@ export async function generateVariant(
   const prompt = baseTemplate
     ? buildAdaptVariantPrompt(facts, role, variant, baseTemplate, jobDescription, extraInstructions)
     : buildVariantPrompt(facts, role, variant, jobDescription, extraInstructions);
-  const message = await client.messages.create({
-    model: ANTHROPIC_MODEL,
-    max_tokens: 2048,
-    tools: [EMAIL_TOOL],
-    tool_choice: { type: "tool", name: "compose_email" },
-    messages: [{ role: "user", content: prompt }],
-  });
-  const toolUse = message.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Model did not return a compose_email tool call");
-  }
-  const out = toolUse.input as { subject: string; body: string };
+  const { output: out } = await callTool<{ subject: string; body: string }>({ tool: EMAIL_TOOL, prompt, maxTokens: 2048 });
   return { subject: humanize(out.subject), body: humanize(out.body) };
 }
 
-// Two Claude calls (in parallel) — one template per audience for the whole company.
+// Two model calls (in parallel) — one template per audience for the whole company.
 export async function generateVariants(
   facts: CompanyFacts,
   role: string,

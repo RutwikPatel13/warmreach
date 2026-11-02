@@ -13,7 +13,7 @@ Pipeline: **Apollo** (find people → verified emails, with optional Hunter.io f
 ## Web app
 
 ```bash
-npm run dev   # → http://localhost:3000
+npm run dev   # → http://localhost:3013
 ```
 
 The web UI is the main way to use warmreach:
@@ -62,7 +62,7 @@ cp .env.example .env                     # then paste your keys
 cp src/profile.example.ts src/profile.ts # then fill in your details
 ```
 
-- `.env` needs `ANTHROPIC_API_KEY` and `APOLLO_API_KEY` (`HUNTER_API_KEY` optional).
+- `.env` needs `APOLLO_API_KEY` and at least one model key. `GEMINI_API_KEY` and `GROQ_API_KEY` are free and write the emails (Gemini first, Groq when its quota runs out); `ANTHROPIC_API_KEY` is needed for the résumé tailor, and for emails only if you list `claude` in `LLM_PROVIDERS`. `HUNTER_API_KEY` is optional.
 - `src/profile.ts` is your identity: name, links, resume location, the experience bullets and signature that go verbatim into every email. It is git-ignored.
 
 ### Gmail (optional, for auto-drafts)
@@ -114,7 +114,8 @@ one Sonnet call plus narrow retries (~5–10¢ per role).
 - `app/` — Next.js web app (UI + local-only API routes)
 - `src/apollo.ts` — company resolve, people search, enrichment
 - `src/hunter.ts` — Hunter.io email-finder fallback
-- `src/personalize.ts` — Claude composes each email
+- `src/llm.ts` — one forced tool call over Gemini → Groq → Claude, with fallback
+- `src/personalize.ts` — composes each email
 - `src/gmail.ts` — OAuth + draft creation/sending
 - `src/templateStore.ts` — saved email templates (`data/templates.json`)
 - `src/tracker.ts` — CSV log + dedupe

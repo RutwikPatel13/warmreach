@@ -5,10 +5,10 @@
   "type": "module",
   "description": "Cold outreach made warm: find the right people at a company, personalize each email with Claude, and land Gmail drafts ready to send",
   "scripts": {
-    "dev": "next dev",
-    "serve": "caffeinate -s next dev",
+    "dev": "next dev -p 3013",
+    "serve": "caffeinate -s next dev -p 3013",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3013",
     "warmreach": "tsx src/index.ts",
     "prep": "tsx src/prepCli.ts",
     "gmail:auth": "tsx src/gmail.ts",

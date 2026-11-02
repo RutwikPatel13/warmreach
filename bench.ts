@@ -25,8 +25,11 @@ const contact: Contact = {
 
 const ROLE = "Software Engineer (Toronto)";
 
-// Approx public pricing, USD per 1M tokens (input / output).
+// Approx public pricing, USD per 1M tokens (input / output). Free tiers are 0.
+// An id is "provider:model"; a bare id is Claude.
 const MODELS = [
+  { label: "Gemini 3.8", id: "gemini:gemini-3.8-flash", in: 0, out: 0 },
+  { label: "gpt-oss-120b", id: "groq:openai/gpt-oss-120b", in: 0, out: 0 },
   { label: "Haiku 4.5", id: "claude-haiku-4-5-20251001", in: 1, out: 5 },
   { label: "Sonnet 4.6", id: "claude-sonnet-4-6", in: 3, out: 15 },
   { label: "Opus 4.8", id: "claude-opus-4-8", in: 5, out: 25 },
@@ -49,7 +52,7 @@ async function main() {
         outTok: r.usage.output_tokens,
         ms: r.ms,
         cost,
-        perBudget: Math.floor(BUDGET / cost),
+        perBudget: cost ? Math.floor(BUDGET / cost) : Infinity,
       });
     } catch (e: any) {
       console.error(`ERROR: ${e.message}`);
