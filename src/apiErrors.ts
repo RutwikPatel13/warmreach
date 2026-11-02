@@ -17,8 +17,60 @@ interface MaybeApiError {
   error?: { error?: { type?: string; message?: string } };
 }
 
+// The free providers (src/llm.ts) fail with { provider, status, message }; a
+// whole chain failing carries each attempt in `failures`. Checked by shape, not
+// instanceof, so this file stays free of imports.
+interface ChainFailure {
+  ref: { provider: string; model: string };
+  error: unknown;
+}
+
+const PROVIDER_LABEL: Record<string, string> = { gemini: "Gemini", groq: "Groq", claude: "Claude" };
+
+function shortReason(e: unknown): string {
+  const err = (e ?? {}) as MaybeApiError;
+  if (/credit balance is too low/i.test(err.error?.error?.message ?? err.message ?? "")) return "out of credits";
+  switch (err.status) {
+    case 401:
+    case 403:
+      return "key rejected";
+    case 404:
+      return "model not found";
+    case 429:
+      return "quota spent";
+    case 500:
+    case 502:
+    case 503:
+    case 529:
+      return "temporarily down";
+  }
+  return (err.message ?? "failed").slice(0, 80);
+}
+
 /** A short, actionable sentence for any error coming out of an LLM call. */
 export function friendlyLlmError(e: unknown): string {
+  const failures = (e as { failures?: ChainFailure[] } | null)?.failures;
+  if (Array.isArray(failures) && failures.length) {
+    const allQuota = failures.every((f) => (f.error as MaybeApiError)?.status === 429);
+    if (allQuota) {
+      return "Every free model quota is spent for the moment. Wait a minute and try again, or add Claude as a paid fallback with LLM_PROVIDERS=gemini,groq,claude in .env — your work is saved.";
+    }
+    const parts = failures.map(
+      (f) => `${PROVIDER_LABEL[f.ref.provider] ?? f.ref.provider} ${f.ref.model}: ${shortReason(f.error)}`,
+    );
+    return `No model could handle this request (${parts.join("; ")}). Check the keys and models in .env, then try again.`;
+  }
+
+  const provider = (e as { provider?: string } | null)?.provider;
+  if (provider && provider !== "claude") {
+    const name = PROVIDER_LABEL[provider] ?? provider;
+    const status = (e as MaybeApiError).status;
+    const hint = status === 401 || status === 403 || status === 404
+      ? ` Check ${provider.toUpperCase()}_API_KEY and the model name in .env.`
+      : " Try again in a minute.";
+    return `${name}: ${shortReason(e)}.${hint}`;
+  }
+
   const err = (e ?? {}) as MaybeApiError;
   const status = err.status;
   const body = err.error?.error;

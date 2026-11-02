@@ -1,9 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { ANTHROPIC_API_KEY, ANTHROPIC_MODEL } from "./config";
+import type Anthropic from "@anthropic-ai/sdk";
+import { callTool } from "./llm";
 
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-
-// JD-based people selection: one Claude call ranks the (free) Apollo/Hunter
+// JD-based people selection: one model call ranks the (free) Apollo/Hunter
 // search results against the pasted job description, so the likely hiring
 // manager / relevant team leads / recruiters bubble up BEFORE any enrichment
 // credit is spent. Judged from job titles only — no extra Apollo cost.
@@ -79,7 +77,7 @@ function buildPrompt(
   ].join("\n");
 }
 
-// One Claude call; returns a fit per candidate id (absent = not a match).
+// One model call; returns a fit per candidate id (absent = not a match).
 // Callers should treat failures as non-fatal — ranking is a nicety on top of
 // search, so fail open rather than blocking results.
 export async function selectContacts(
@@ -90,21 +88,11 @@ export async function selectContacts(
 ): Promise<Record<string, Fit>> {
   if (candidates.length === 0) return {};
 
-  const message = await client.messages.create({
-    model: ANTHROPIC_MODEL,
-    max_tokens: 4096,
-    tools: [SELECT_TOOL],
-    tool_choice: { type: "tool", name: "select_contacts" },
-    messages: [
-      { role: "user", content: buildPrompt(companyName, role, jobDescription, candidates) },
-    ],
+  const { output: out } = await callTool<{ picks?: { index: number; priority: string; reason: string }[] }>({
+    tool: SELECT_TOOL,
+    prompt: buildPrompt(companyName, role, jobDescription, candidates),
+    maxTokens: 4096,
   });
-
-  const toolUse = message.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Model did not return a select_contacts tool call");
-  }
-  const out = toolUse.input as { picks?: { index: number; priority: string; reason: string }[] };
 
   const fits: Record<string, Fit> = {};
   for (const pick of out.picks ?? []) {

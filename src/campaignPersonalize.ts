@@ -1,5 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { ANTHROPIC_API_KEY, ANTHROPIC_MODEL } from "./config";
+import type Anthropic from "@anthropic-ai/sdk";
+import { callTool } from "./llm";
 import { profile } from "./profile";
 import { classifyVariant, type Variant, type Email, type CompanyFacts } from "./personalize";
 import { HUMAN_EMAIL_RULES, humanize } from "./humanRules";
@@ -13,8 +13,6 @@ import { HUMAN_EMAIL_RULES, humanize } from "./humanRules";
 // grounded ONLY in the company's Apollo facts (never invented).
 
 export { classifyVariant, type Variant, type Email, type CompanyFacts };
-
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 const EMAIL_TOOL: Anthropic.Tool = {
   name: "compose_email",
@@ -104,24 +102,17 @@ function buildPrompt(
     .join("\n");
 }
 
-// One Claude call — a cold-intro template for one audience at one company.
+// One model call — a cold-intro template for one audience at one company.
 // No Apollo cost. Grounded in the company facts captured during campaign search.
 export async function generateCampaignVariant(
   facts: CompanyFacts,
   variant: Variant,
   opts: { instructions?: string; baseTemplate?: Email } = {},
 ): Promise<Email> {
-  const message = await client.messages.create({
-    model: ANTHROPIC_MODEL,
-    max_tokens: 1536,
-    tools: [EMAIL_TOOL],
-    tool_choice: { type: "tool", name: "compose_email" },
-    messages: [{ role: "user", content: buildPrompt(facts, variant, opts) }],
+  const { output: out } = await callTool<{ subject: string; body: string }>({
+    tool: EMAIL_TOOL,
+    prompt: buildPrompt(facts, variant, opts),
+    maxTokens: 1536,
   });
-  const toolUse = message.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Model did not return a compose_email tool call");
-  }
-  const out = toolUse.input as { subject: string; body: string };
   return { subject: humanize(out.subject), body: humanize(out.body) };
 }

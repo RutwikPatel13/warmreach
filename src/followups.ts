@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { google } from "googleapis";
-import Anthropic from "@anthropic-ai/sdk";
-import { ANTHROPIC_API_KEY, ANTHROPIC_MODEL } from "./config";
+import type Anthropic from "@anthropic-ai/sdk";
+import { callTool } from "./llm";
 import { profile } from "./profile";
 import { HUMAN_EMAIL_RULES, humanize } from "./humanRules";
 import { normCompany, type OutreachRow } from "./tracker";
@@ -12,13 +12,11 @@ import { normCompany, type OutreachRow } from "./tracker";
 // already outreached, we find their Gmail thread and check for an inbound
 // reply — this works RETROACTIVELY on mail sent before this feature existed,
 // since it re-derives the thread from Gmail search rather than relying on a
-// stored message id. A genuine reply is read once by Claude (classified +
-// summarized); a bounce is detected deterministically (no Claude call). Who's
+// stored message id. A genuine reply is read once by the model (classified +
+// summarized); a bounce is detected deterministically (no model call). Who's
 // "due" for a nudge is computed from a cadence log (data/followups_log.json)
 // kept separate from data/outreach_log.csv so follow-up sends never pollute
 // the Applications/Campaigns stats.
-
-const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 // ─────────────────────────────────────────────────────────────────────────
 // Company / person grouping (from the outreach log)
@@ -485,7 +483,7 @@ export async function scanPersonThread(auth: any, _fromAddr: string, person: Per
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Claude: classify a reply, and compose a follow-up draft.
+// Model calls: classify a reply, and compose a follow-up draft.
 // ─────────────────────────────────────────────────────────────────────────
 
 const CLASSIFY_TOOL: Anthropic.Tool = {
@@ -528,6 +526,8 @@ export async function classifyReply(
   const prompt = [
     `You are triaging an inbound email reply to a job-outreach email sent by ${profile.fullName}.`,
     `Original context: ${context.name} at ${context.company}, regarding the "${context.role}" role.`,
+    // Without it, a bare "back on the 10th" gets resolved against whatever year the model guesses.
+    `Today's date is ${new Date().toISOString().slice(0, 10)}.`,
     "",
     "REPLY TEXT:",
     replyText.slice(0, 4000),
@@ -536,18 +536,12 @@ export async function classifyReply(
     "Return the result by calling the classify_reply tool.",
   ].join("\n");
 
-  const message = await client.messages.create({
-    model: ANTHROPIC_MODEL,
-    max_tokens: 512,
-    tools: [CLASSIFY_TOOL],
-    tool_choice: { type: "tool", name: "classify_reply" },
-    messages: [{ role: "user", content: prompt }],
-  });
-  const toolUse = message.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Model did not return a classify_reply tool call");
-  }
-  const out = toolUse.input as { category: ReplyCategory; summary: string; recommendation: Recommendation; returnDate: string };
+  const { output: out } = await callTool<{
+    category: ReplyCategory;
+    summary: string;
+    recommendation: Recommendation;
+    returnDate: string;
+  }>({ tool: CLASSIFY_TOOL, prompt, maxTokens: 512 });
   return {
     category: out.category,
     summary: humanize(out.summary),
@@ -614,18 +608,11 @@ function buildFollowupPrompt(ctx: FollowupContext, tone: FollowupTone): string {
 }
 
 export async function generateFollowupDraft(ctx: FollowupContext, tone: FollowupTone): Promise<{ subject: string; body: string }> {
-  const message = await client.messages.create({
-    model: ANTHROPIC_MODEL,
-    max_tokens: 1024,
-    tools: [FOLLOWUP_TOOL],
-    tool_choice: { type: "tool", name: "compose_followup" },
-    messages: [{ role: "user", content: buildFollowupPrompt(ctx, tone) }],
+  const { output: out } = await callTool<{ subject: string; body: string }>({
+    tool: FOLLOWUP_TOOL,
+    prompt: buildFollowupPrompt(ctx, tone),
+    maxTokens: 1024,
   });
-  const toolUse = message.content.find((b) => b.type === "tool_use");
-  if (!toolUse || toolUse.type !== "tool_use") {
-    throw new Error("Model did not return a compose_followup tool call");
-  }
-  const out = toolUse.input as { subject: string; body: string };
   return { subject: humanize(out.subject), body: humanize(out.body) };
 }
 
