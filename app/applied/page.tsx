@@ -20,7 +20,7 @@ import { StartDialog } from "./StartDialog";
 type Bucket = BoardRow["bucket"];
 type Tab = "all" | Bucket;
 
-interface Meta { lastSyncAt: string | null; syncRequestedAt: string | null; tsentaTotal: number | null }
+interface Meta { lastSyncAt: string | null; syncRequestedAt: string | null; tsentaTotal: number | null; resumeSince: string | null }
 export interface QueueView {
   paused: boolean;
   running: number;
@@ -399,7 +399,8 @@ export default function AppliedBoard() {
 
   const requestSync = async () => {
     try {
-      const r = await fetch("/api/applied/sync", { method: "POST" }).then((x) => x.json());
+      // Your "Applied since" day goes along: the sync saves résumés back to it.
+      const r = await fetch("/api/applied/sync", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: since || null }) }).then((x) => x.json());
       setMeta(r.meta);
     } catch { setErr("Couldn’t record the sync request."); }
   };
@@ -420,7 +421,7 @@ export default function AppliedBoard() {
           <p>Every job Tsenta applied to. Filter, select, and Start runs each one up to written emails.</p>
         </div>
         <div className="wb-sync">
-          <span>{meta?.lastSyncAt ? `Last synced ${shortDate(meta.lastSyncAt)}, ${new Date(meta.lastSyncAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : "Never synced"} · {fmt(rows.length)} here{meta?.tsentaTotal ? ` of ${fmt(meta.tsentaTotal)} in Tsenta` : ""}</span>
+          <span>{meta?.lastSyncAt ? `Last synced ${shortDate(meta.lastSyncAt)}, ${new Date(meta.lastSyncAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : "Never synced"} · {fmt(rows.length)} here{meta?.tsentaTotal ? ` of ${fmt(meta.tsentaTotal)} in Tsenta` : ""}{meta?.resumeSince ? ` · résumés saved since ${longDate(meta.resumeSince)}` : ""}</span>
           {meta?.syncRequestedAt && <span className="warn">Sync requested · ask Claude to “sync tsenta”</span>}
         </div>
         <button type="button" className="wb-btn" onClick={() => void requestSync()}>Sync Tsenta</button>

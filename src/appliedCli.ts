@@ -4,6 +4,7 @@ import {
   importApplications,
   importDetails,
   importInbox,
+  isDay,
   listApplications,
   prepareMany,
   readMeta,
@@ -27,7 +28,8 @@ import { fetchJobText } from "./jobText";
 //   npm run applied -- total <n>               Tsenta's own count, for the board's header
 //   npm run applied -- inbox <file.json>       list-inbox-messages rows
 //   npm run applied -- details <file.json>     get-job-details results
-//   npm run applied -- resumes                 started rows still waiting on Tsenta's résumé (JSON)
+//   npm run applied -- resumes [--since D]     résumés to fetch: started rows waiting on one, then
+//                                              submitted rows since D (saved as the default) (JSON)
 //   npm run applied -- outbox                  notes to write to Tsenta's tracker (JSON)
 //   npm run applied -- noted <id…>             mark those notes written
 //   npm run applied -- jd [--limit N]          read postings for rows without one (free, local fetch)
@@ -66,6 +68,7 @@ async function main() {
     console.log(JSON.stringify({
       lastSyncAt: m.lastSyncAt,
       syncRequestedAt: m.syncRequestedAt,
+      resumeSince: m.resumeSince,
       tsentaTotal: m.tsentaTotal,
       applications: apps.length,
       resumesWanted: resumesWanted().length,
@@ -112,6 +115,11 @@ async function main() {
   }
 
   if (cmd === "resumes") {
+    const i = args.indexOf("--since");
+    if (i >= 0) {
+      if (!isDay(args[i + 1])) throw new Error("usage: applied resumes [--since YYYY-MM-DD]");
+      writeMeta({ resumeSince: args[i + 1] });
+    }
     console.log(JSON.stringify(resumesWanted(), null, 1));
     return;
   }
