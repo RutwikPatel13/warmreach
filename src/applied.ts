@@ -1,12 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_TITLES, resolveCompanyOptions, searchContacts, titlesForGroups, type Company } from "./apollo";
-import { contactsForCompany } from "./contacts";
+import { contactsCompanyList, contactsForCompany } from "./contacts";
 import { writeFileAtomic } from "./contactDb";
 import { fetchJobText } from "./jobText";
 import { classifyVariant, type Email, type Variant } from "./personalize";
 import { profile } from "./profile";
-import { alreadyContacted, normCompany, outreachRows } from "./tracker";
+import { alreadyContacted, contactedCompanies, normCompany, outreachRows } from "./tracker";
+import { domainSearch, hunterConfigured } from "./hunter";
+import { readScanResult } from "./followups";
 
 // ── Applied: Tsenta applications → warmreach outreach ────────────────────────
 // Tsenta applies; this module turns each submitted application into outreach.
@@ -38,7 +40,65 @@ export const DEFAULT_PICK = 3;
 // openedAt and the outreach log (drafting happens on the Applications page).
 // "drafted" is only ever stored by the first version of this feature, which
 // drafted on its own page and kept the drafts in `drafts` (see LegacyDraft).
-export type Status = "new" | "preparing" | "review" | "stuck" | "drafted";
+// The board's Start adds two more: "writing" while a model writes the emails,
+// "ready" once they're written and the row waits for review.
+export type Status = "new" | "preparing" | "review" | "writing" | "ready" | "stuck" | "drafted";
+
+/** Tsenta's own tab for the application. Only "submitted" can be started. */
+export type Bucket = "submitted" | "in_flight" | "needs" | "failed" | "skipped";
+
+/** The column on Tsenta's tracker (kanban). */
+export type Pipeline = "APPLIED" | "GHOSTED" | "INTERVIEWING" | "REJECTED" | "OFFER";
+
+/** Why a run stopped: the board shows each one differently. */
+export type StuckReason = "company" | "no_emails" | "contacted" | "other";
+
+/** What Start was told to do — kept on the row so a resumed run does the same. */
+export interface StartOptions {
+  templateId: string | null; // saved template the emails adapt; null = written from scratch
+  presetId: string | null; // prompt preset added to the instructions
+  pick: number; // people per company
+  roles: { recruiter: boolean; team: boolean; founders: boolean };
+  resumeFallback: "wait" | "base"; // when Tsenta's résumé isn't in yet
+}
+
+export const DEFAULT_START: StartOptions = {
+  templateId: null,
+  presetId: null,
+  pick: 3,
+  roles: { recruiter: true, team: true, founders: true },
+  resumeFallback: "wait",
+};
+
+/** get-job-details fields, when Tsenta has them. */
+export interface JobDetails {
+  salaryMin: number | null;
+  salaryMax: number | null;
+  currency: string | null;
+  yearsExperience: number | null;
+  sponsorship: boolean | null;
+  employmentType: string | null;
+  roleFamily: string | null;
+}
+
+/** One message from Tsenta's inbox, as its category says. */
+export interface InboxSignal {
+  category: string; // INTERVIEW, OFFER, REJECTION, ASSESSMENT, REMINDER, ACKNOWLEDGMENT, GENERAL
+  subject: string;
+  at: string;
+}
+
+/** A draft made from the review queue. */
+export interface BoardDraft {
+  personId: string;
+  name: string;
+  title: string;
+  email: string;
+  variant: Variant;
+  draftId: string;
+  at: string;
+  sentAt: string | null;
+}
 
 /** Drafts made by the first version's own page — carried into the workspace. */
 export interface LegacyDraft {
@@ -55,8 +115,8 @@ export interface Person {
   id: string; // Apollo person id, or "file:<email>" for someone already on file
   firstName: string;
   title: string;
-  source: "apollo" | "file";
-  email: string | null; // known up front only for "file" people
+  source: "apollo" | "file" | "hunter";
+  email: string | null; // known up front for "file" and "hunter" people
   variant: Variant;
   fit: "high" | "medium" | null;
   reason: string;
@@ -76,6 +136,8 @@ export interface Org {
   description: string | null;
   keywords: string[];
   logoUrl: string | null;
+  employees?: number | null;
+  industry?: string | null;
 }
 
 export interface Application {
@@ -102,13 +164,49 @@ export interface Application {
   preparedAt: string | null;
   openedAt: string | null; // turned into an Applications workspace
   drafts?: LegacyDraft[]; // first version only; read, never written
+
+  // ── from Tsenta, refreshed on every sync (absent on rows imported before the board)
+  bucket?: Bucket;
+  tsentaState?: string | null; // raw status, e.g. COMPLETED, PENDING_RESUME_REVIEW
+  jobId?: string | null;
+  locations?: string[];
+  skillTags?: string[];
+  tailored?: boolean | null; // Tsenta submitted an optimized résumé
+  resumeProfileId?: string | null;
+  tsentaUpdatedAt?: string | null;
+  pipeline?: Pipeline | null;
+  pipelineHistory?: string[];
+  trackerId?: string | null; // the tracker row, for writing notes back
+  tsentaNotes?: string | null;
+  linkedEmails?: number;
+  inbox?: InboxSignal[];
+  details?: JobDetails | null;
+
+  // ── the board's run
+  stuckReason?: StuckReason | null;
+  startedAt?: string | null;
+  options?: StartOptions | null;
+  emailsAt?: string | null;
+  resumeWanted?: boolean; // started without a saved résumé: the next sync fetches it
+  boardDrafts?: BoardDraft[];
+  noteQueuedAt?: string | null; // "add a note to Tsenta" clicked; the next sync writes it
+  notedAt?: string | null;
 }
 
 // ── store ────────────────────────────────────────────────────────────────────
 
+// Parsed once per change of the file, not per request: with thousands of rows
+// the board reads the whole store on every load. writeAll() keeps the cache in
+// step, and an edit from the CLI (another process) changes the mtime.
+let cache: { mtimeMs: number; size: number; all: Record<string, Application> } | null = null;
+
 function readAll(): Record<string, Application> {
   try {
-    return JSON.parse(fs.readFileSync(STORE, "utf8")) as Record<string, Application>;
+    const st = fs.statSync(STORE);
+    if (cache && cache.mtimeMs === st.mtimeMs && cache.size === st.size) return cache.all;
+    const all = JSON.parse(fs.readFileSync(STORE, "utf8")) as Record<string, Application>;
+    cache = { mtimeMs: st.mtimeMs, size: st.size, all };
+    return all;
   } catch {
     return {};
   }
@@ -116,7 +214,13 @@ function readAll(): Record<string, Application> {
 
 function writeAll(all: Record<string, Application>): void {
   fs.mkdirSync(DIR, { recursive: true });
-  writeFileAtomic(STORE, JSON.stringify(all, null, 1));
+  writeFileAtomic(STORE, JSON.stringify(all));
+  try {
+    const st = fs.statSync(STORE);
+    cache = { mtimeMs: st.mtimeMs, size: st.size, all };
+  } catch {
+    cache = null;
+  }
 }
 
 export function listApplications(): Application[] {
@@ -162,12 +266,25 @@ export interface TsentaRow {
   dateApplied?: string;
   jobDescription?: string | null;
   resumePdfUrl?: string | null;
+  // list-applications
+  jobId?: string | null;
+  locations?: unknown[];
+  skillTags?: unknown[];
+  useOptimizedResume?: boolean;
+  isOptimized?: boolean;
+  resumeProfileId?: string | null;
+  // list-tracked-applications (the tracker row's own id is `id`)
+  id?: string;
+  statusHistory?: unknown[];
+  notes?: string | null;
+  linkedEmailCount?: number;
 }
 
 export interface ImportResult {
   addedIds: string[];
   added: number;
   updated: number;
+  unchanged: number; // already here with the same Tsenta updatedAt: a sync can stop paging
   skipped: number;
   resumes: number;
   resumeErrors: string[];
@@ -190,11 +307,31 @@ async function downloadResume(id: string, url: string): Promise<string> {
   return file;
 }
 
-// list-applications statuses for work that never reached the employer.
-const NOT_SUBMITTED = /^(READY|RUNNING|OPTIMIZING_|PENDING_|FAILED|SKIPPED)/;
+// Tsenta's raw status → its tab. list-applications says COMPLETED for submitted;
+// tracker rows (APPLIED, INTERVIEWING, …) exist only once submitted.
+function bucketOf(state: string): Bucket {
+  if (/^(READY|RUNNING|OPTIMIZING_)/.test(state)) return "in_flight";
+  if (/^PENDING_/.test(state)) return "needs";
+  if (/^FAILED/.test(state)) return "failed";
+  if (/^SKIPPED/.test(state)) return "skipped";
+  return "submitted";
+}
+
+const PIPELINES = new Set<Pipeline>(["APPLIED", "GHOSTED", "INTERVIEWING", "REJECTED", "OFFER"]);
+
+const strings = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? v.map((x) => (typeof x === "string" ? x : (x as any)?.name ?? (x as any)?.label ?? (x as any)?.city ?? "")).map((s) => String(s).trim()).filter(Boolean)
+    : [];
+
+// statusHistory entries come as strings or { status, at } objects.
+const history = (v: unknown): string[] =>
+  Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : (x as any)?.status ?? (x as any)?.toStatus ?? "")).filter(Boolean) : [];
+
+const isTrackerRow = (r: TsentaRow) => r.statusHistory !== undefined || r.positionTitle !== undefined || r.dateApplied !== undefined;
 
 export async function importApplications(rows: TsentaRow[]): Promise<ImportResult> {
-  const out: ImportResult = { addedIds: [], added: 0, updated: 0, skipped: 0, resumes: 0, resumeErrors: [] };
+  const out: ImportResult = { addedIds: [], added: 0, updated: 0, unchanged: 0, skipped: 0, resumes: 0, resumeErrors: [] };
   const now = new Date().toISOString();
   const all = readAll();
 
@@ -202,13 +339,14 @@ export async function importApplications(rows: TsentaRow[]): Promise<ImportResul
   for (const r of rows) {
     const id = r.applicationId?.trim();
     const company = r.companyName?.trim();
-    const state = (r.status ?? r.jobStatus ?? "COMPLETED").toUpperCase();
-    // Only submitted applications. list-applications says COMPLETED; tracker rows
-    // (APPLIED, INTERVIEWING, …) exist only once submitted, so those count too.
-    if (!id || !company || NOT_SUBMITTED.test(state)) {
+    // A tracker row you added by hand in Tsenta has no applicationId: nothing to start.
+    if (!id || !company) {
       out.skipped++;
       continue;
     }
+    const tracker = isTrackerRow(r);
+    const state = (r.status ?? r.jobStatus ?? "COMPLETED").toUpperCase();
+    const bucket = tracker ? "submitted" : bucketOf(state);
     const role = r.jobTitle?.trim() || r.positionTitle?.trim() || null;
     const url = r.url?.trim() || r.applicationUrl?.trim() || null;
     const jd = r.jobDescription?.trim() || null;
@@ -222,7 +360,7 @@ export async function importApplications(rows: TsentaRow[]): Promise<ImportResul
         role,
         url,
         ats: r.atsType ?? null,
-        appliedAt: r.dateApplied ?? r.updatedAt ?? r.createdAt ?? now,
+        appliedAt: r.dateApplied ?? r.createdAt ?? r.updatedAt ?? now,
         importedAt: now,
         status: "new",
         error: null,
@@ -241,39 +379,207 @@ export async function importApplications(rows: TsentaRow[]): Promise<ImportResul
       };
       out.added++;
       out.addedIds.push(id);
-    } else {
-      // Fill gaps only. Never touch status, people, emails or drafts — a re-sync
-      // must not undo work already done in warmreach.
-      let changed = false;
-      if (!existing.role && role) { existing.role = role; changed = true; }
-      if (!existing.url && url) { existing.url = url; changed = true; }
-      if (!existing.companyWebsite && r.companyWebsite) { existing.companyWebsite = r.companyWebsite; changed = true; }
-      if (!existing.jd && jd) {
-        existing.jd = jd;
-        existing.jdSource = "tsenta";
-        if (existing.status === "stuck") { existing.status = "new"; existing.error = null; }
-        changed = true;
-      }
-      if (changed) out.updated++;
+    }
+    const a = all[id];
+    const before = JSON.stringify(a);
+
+    // Fill gaps in what warmreach owns. Never touch status, people, emails or
+    // drafts: a re-sync must not undo work already done here.
+    if (!a.role && role) a.role = role;
+    if (!a.url && url) a.url = url;
+    if (!a.companyWebsite && r.companyWebsite) a.companyWebsite = r.companyWebsite.trim();
+    if (!a.jd && jd) {
+      a.jd = jd;
+      a.jdSource = "tsenta";
+      if (a.status === "stuck" && a.stuckReason !== "company") { a.status = "new"; a.error = null; }
     }
 
-    const cached = all[id].resumePath && fs.existsSync(all[id].resumePath!);
+    // What Tsenta owns is refreshed every time.
+    if (tracker) {
+      const col = state as Pipeline;
+      if (PIPELINES.has(col)) a.pipeline = col;
+      const h = history(r.statusHistory);
+      if (h.length) a.pipelineHistory = h;
+      if (r.id) a.trackerId = r.id;
+      if (r.notes !== undefined) a.tsentaNotes = r.notes ?? null;
+      if (typeof r.linkedEmailCount === "number") a.linkedEmails = r.linkedEmailCount;
+      a.bucket = a.bucket ?? "submitted";
+    } else {
+      a.bucket = bucket;
+      a.tsentaState = state;
+      if (r.jobId) a.jobId = r.jobId;
+      if (r.locations) a.locations = strings(r.locations);
+      if (r.skillTags) a.skillTags = strings(r.skillTags);
+      const tailored = r.isOptimized ?? r.useOptimizedResume;
+      if (typeof tailored === "boolean") a.tailored = tailored;
+      if (r.resumeProfileId) a.resumeProfileId = r.resumeProfileId;
+      if (r.atsType) a.ats = r.atsType;
+      if (r.updatedAt) a.tsentaUpdatedAt = r.updatedAt;
+    }
+
+    if (out.addedIds.at(-1) !== id) {
+      if (JSON.stringify(a) !== before) out.updated++;
+      else out.unchanged++;
+    }
+
+    const cached = a.resumePath && fs.existsSync(a.resumePath);
     if (r.resumePdfUrl && !cached) toFetch.push({ id, url: r.resumePdfUrl });
   }
   writeAll(all);
+  writeMeta({ lastSyncAt: now });
 
   // Downloads after the write, so a slow or failed download never loses the
   // import itself. Each success is its own small update.
   for (const { id, url } of toFetch) {
     try {
       const file = await downloadResume(id, url);
-      updateApplication(id, (a) => { a.resumePath = file; });
+      updateApplication(id, (a) => { a.resumePath = file; a.resumeWanted = false; });
       out.resumes++;
     } catch (e: any) {
       out.resumeErrors.push(`${all[id].company}: ${e?.message ?? "download failed"}`);
     }
   }
   return out;
+}
+
+// ── more from Tsenta: inbox and job details ─────────────────────────────────
+// Neither shape has been seen from a real call yet, so both accept the likely
+// field names and match to an application by its id, else its job id, else the
+// company name. Anything that matches nothing is counted, never guessed at.
+
+export interface InboxRow {
+  applicationId?: string | null;
+  companyName?: string | null;
+  company?: string | null;
+  fromName?: string | null;
+  from?: string | null;
+  category?: string | null;
+  subject?: string | null;
+  receivedAt?: string | null;
+  date?: string | null;
+  createdAt?: string | null;
+}
+
+export function importInbox(rows: InboxRow[]): { matched: number; unmatched: number } {
+  const all = readAll();
+  const byCompany = new Map<string, Application[]>();
+  for (const a of Object.values(all)) {
+    for (const n of [a.company, a.org?.name]) {
+      if (!n) continue;
+      const k = nameKey(n);
+      byCompany.set(k, [...(byCompany.get(k) ?? []), a]);
+    }
+  }
+  let matched = 0, unmatched = 0;
+  for (const r of rows) {
+    const category = (r.category ?? "GENERAL").toUpperCase();
+    if (category === "VERIFICATION") continue; // OTPs: nothing to show
+    const at = r.receivedAt ?? r.date ?? r.createdAt ?? new Date().toISOString();
+    const subject = (r.subject ?? "").slice(0, 160);
+    const hits = r.applicationId && all[r.applicationId]
+      ? [all[r.applicationId]]
+      : byCompany.get(nameKey(r.companyName ?? r.company ?? r.fromName ?? "")) ?? [];
+    if (!hits.length) { unmatched++; continue; }
+    matched++;
+    for (const a of hits) {
+      const list = a.inbox ?? [];
+      if (!list.some((m) => m.at === at && m.subject === subject)) list.push({ category, subject, at });
+      a.inbox = list.sort((x, y) => Date.parse(y.at) - Date.parse(x.at)).slice(0, 20);
+    }
+  }
+  writeAll(all);
+  return { matched, unmatched };
+}
+
+export interface DetailsRow {
+  applicationId?: string | null;
+  jobId?: string | null;
+  id?: string | null;
+  salaryMin?: number | null;
+  salaryMax?: number | null;
+  salary?: { min?: number | null; max?: number | null; currency?: string | null } | null;
+  currency?: string | null;
+  yearsExperience?: number | null;
+  yearsOfExperience?: number | null;
+  sponsorship?: boolean | string | null;
+  visaSponsorship?: boolean | string | null;
+  employmentType?: string | null;
+  roleFamily?: string | null;
+}
+
+const yesNo = (v: unknown): boolean | null =>
+  typeof v === "boolean" ? v : typeof v === "string" ? (/^(yes|true|offered|available)/i.test(v) ? true : /^(no|false|not)/i.test(v) ? false : null) : null;
+
+export function importDetails(rows: DetailsRow[]): { matched: number; unmatched: number } {
+  const all = readAll();
+  const byJob = new Map(Object.values(all).filter((a) => a.jobId).map((a) => [a.jobId!, a]));
+  let matched = 0, unmatched = 0;
+  for (const r of rows) {
+    const a = (r.applicationId && all[r.applicationId]) || byJob.get(r.jobId ?? r.id ?? "");
+    if (!a) { unmatched++; continue; }
+    matched++;
+    a.details = {
+      salaryMin: r.salaryMin ?? r.salary?.min ?? null,
+      salaryMax: r.salaryMax ?? r.salary?.max ?? null,
+      currency: r.currency ?? r.salary?.currency ?? null,
+      yearsExperience: r.yearsExperience ?? r.yearsOfExperience ?? null,
+      sponsorship: yesNo(r.sponsorship ?? r.visaSponsorship),
+      employmentType: r.employmentType ?? null,
+      roleFamily: r.roleFamily ?? null,
+    };
+  }
+  writeAll(all);
+  return { matched, unmatched };
+}
+
+// ── sync bookkeeping ────────────────────────────────────────────────────────
+// warmreach can't reach Tsenta itself; a Claude session with Tsenta's connector
+// does the pulling. The board's "Sync Tsenta" leaves a request here, and the
+// session clears it.
+
+const META = path.join(DIR, "meta.json");
+
+export interface SyncMeta {
+  lastSyncAt: string | null;
+  syncRequestedAt: string | null;
+  tsentaTotal: number | null;
+}
+
+export function readMeta(): SyncMeta {
+  try {
+    return { lastSyncAt: null, syncRequestedAt: null, tsentaTotal: null, ...JSON.parse(fs.readFileSync(META, "utf8")) };
+  } catch {
+    return { lastSyncAt: null, syncRequestedAt: null, tsentaTotal: null };
+  }
+}
+
+export function writeMeta(patch: Partial<SyncMeta>): SyncMeta {
+  const next = { ...readMeta(), ...patch };
+  fs.mkdirSync(DIR, { recursive: true });
+  writeFileAtomic(META, JSON.stringify(next, null, 1));
+  return next;
+}
+
+/** Started rows still waiting on Tsenta's résumé — what the next sync fetches. */
+export function resumesWanted(): { applicationId: string; companyName: string }[] {
+  return listApplications()
+    .filter((a) => a.resumeWanted && !(a.resumePath && fs.existsSync(a.resumePath)))
+    .map((a) => ({ applicationId: a.id, companyName: a.company }));
+}
+
+/** Notes waiting to be written to Tsenta's tracker. */
+export function tsentaOutbox(): { applicationId: string; trackerId: string | null; companyName: string; note: string }[] {
+  return listApplications()
+    .filter((a) => a.noteQueuedAt && !a.notedAt)
+    .map((a) => ({ applicationId: a.id, trackerId: a.trackerId ?? null, companyName: a.company, note: outreachNote(a) }));
+}
+
+export function outreachNote(a: Application): string {
+  const drafts = a.boardDrafts ?? [];
+  const sent = drafts.filter((d) => d.sentAt);
+  const when = shortDate((sent[0] ?? drafts[0])?.sentAt ?? (sent[0] ?? drafts[0])?.at ?? new Date().toISOString());
+  const n = sent.length || drafts.length;
+  return `warmreach: ${sent.length ? "emailed" : "drafted emails to"} ${n} ${n === 1 ? "person" : "people"} on ${when}`;
 }
 
 // ── prepare (free of Apollo credits) ────────────────────────────────────────
@@ -334,12 +640,23 @@ const isRecruiter = (p: Person) => RECRUIT_RE.test(ownRole(p.title));
 // Default pick: the best recruiter plus the two people closest to the team —
 // the recruiter and the hiring side read different emails — topped up from
 // whatever is left if either side is missing.
-function pickDefaults(people: Person[]): void {
-  const recruiters = people.filter(isRecruiter);
-  const team = people.filter((p) => !isRecruiter(p));
-  const chosen = new Set([...recruiters.slice(0, 1), ...team.slice(0, DEFAULT_PICK - 1)].map((p) => p.id));
-  for (const p of people) {
-    if (chosen.size >= DEFAULT_PICK) break;
+//
+// Start can change how many and from which sides: with recruiters off nobody
+// recruiting is picked; with founders off no founder is; "team" is everyone else.
+function pickDefaults(people: Person[], opts: StartOptions = DEFAULT_START): void {
+  const n = Math.max(1, Math.min(10, opts.pick || DEFAULT_PICK));
+  const allowed = people.filter((p) => {
+    const own = ownRole(p.title);
+    if (RECRUIT_RE.test(own)) return opts.roles.recruiter;
+    if (FOUNDER_RE.test(own)) return opts.roles.founders;
+    return opts.roles.team;
+  });
+  const pool = allowed.length ? allowed : people;
+  const recruiters = pool.filter(isRecruiter);
+  const team = pool.filter((p) => !isRecruiter(p));
+  const chosen = new Set([...recruiters.slice(0, 1), ...team.slice(0, n - Math.min(1, recruiters.length))].map((p) => p.id));
+  for (const p of pool) {
+    if (chosen.size >= n) break;
     chosen.add(p.id);
   }
   for (const p of people) p.picked = chosen.has(p.id);
@@ -536,14 +853,15 @@ async function resolveEmployer(a: Application, jd: string): Promise<Company | nu
  * is free, and nobody's email is revealed here. Leaves the application at
  * "review", or at "stuck" with a reason the page can act on.
  */
-export async function prepare(id: string): Promise<Application> {
+export async function prepare(id: string, opts: StartOptions = DEFAULT_START): Promise<Application> {
   const start = getApplication(id);
   if (!start) throw new Error(`No application ${id}`);
   // Its workspace owns it now (or it was drafted) — don't rewrite underneath it.
   if (start.openedAt || start.status === "drafted") return start;
-  updateApplication(id, (a) => { a.status = "preparing"; a.error = null; });
+  updateApplication(id, (a) => { a.status = "preparing"; a.error = null; a.stuckReason = null; });
 
-  const stuck = (error: string) => updateApplication(id, (a) => { a.status = "stuck"; a.error = error; });
+  const stuck = (error: string, reason: StuckReason = "other") =>
+    updateApplication(id, (a) => { a.status = "stuck"; a.error = error; a.stuckReason = reason; });
 
   try {
     // 1. The posting. A board API gives the real title too.
@@ -572,7 +890,7 @@ export async function prepare(id: string): Promise<Application> {
     // 2. The company — by website, never by name alone (see resolveEmployer).
     const company = await resolveEmployer(start, jd ?? "");
     if (!company) {
-      return stuck(`Couldn’t tell which company “${start.company}” is. Enter its website to continue.`);
+      return stuck(`Couldn’t tell which company “${start.company}” is. Enter its website to continue.`, "company");
     }
     const org: Org = {
       name: company.name,
@@ -581,6 +899,8 @@ export async function prepare(id: string): Promise<Application> {
       description: company.description,
       keywords: company.keywords,
       logoUrl: company.logoUrl ?? null,
+      employees: company.employees ?? null,
+      industry: company.industry ?? null,
     };
 
     // 3. People: on file first (emails known, free), then Apollo (free to search).
@@ -639,8 +959,34 @@ export async function prepare(id: string): Promise<Application> {
         picked: false,
       });
     }
+    // Nobody Apollo can reveal: Hunter lists a domain's people with their
+    // emails (its own quota, no Apollo credit), so those go in as known emails.
+    if (people.length === 0 && hunterConfigured() && org.domain) {
+      for (const h of await domainSearch(org.domain, 30)) {
+        if (alreadyContacted(h.email)) {
+          skipped.push({ name: h.firstName, title: h.position ?? "", reason: "already emailed" });
+          continue;
+        }
+        const k = key(h.firstName, h.position ?? "");
+        if (seen.has(k)) continue;
+        seen.add(k);
+        people.push({
+          id: `hunter:${h.email.toLowerCase()}`,
+          firstName: h.firstName,
+          title: h.position ?? "",
+          source: "hunter",
+          email: h.email,
+          variant: classifyVariant(h.position ?? ""),
+          fit: null,
+          reason: `Hunter, ${h.confidence}% sure of the address`,
+          picked: false,
+        });
+      }
+    }
     if (people.length === 0) {
-      return stuck(`No one at ${org.name} has an email Apollo can reveal.`);
+      return skipped.length
+        ? stuck(`Everyone reachable at ${org.name} was emailed before.`, "contacted")
+        : stuck(`No one at ${org.name} has an email Apollo or Hunter can find.`, "no_emails");
     }
 
     // 4. Rank by title. No model call: preparing is free of Claude as well as
@@ -652,7 +998,7 @@ export async function prepare(id: string): Promise<Application> {
       score.get(a.id)! - score.get(b.id)! ||
       (a.source === "file" ? -1 : 0) - (b.source === "file" ? -1 : 0));
     const kept = people.slice(0, KEEP);
-    pickDefaults(kept);
+    pickDefaults(kept, opts);
     // The picked people lead the list, so what's ticked is what you see first.
     kept.sort((a, b) => Number(b.picked) - Number(a.picked));
 
@@ -670,7 +1016,7 @@ export async function prepare(id: string): Promise<Application> {
       a.preparedAt = new Date().toISOString();
     });
   } catch (e: any) {
-    return stuck(e?.message ?? "Preparing failed.");
+    return stuck(e?.message ?? "Preparing failed.", "other");
   }
 }
 
@@ -712,13 +1058,15 @@ export function toWorkspace(a: Application) {
       firstName: p.firstName,
       lastName: null,
       title: p.title,
-      source: p.source === "file" ? ("csv" as const) : ("apollo" as const),
+      source: p.source === "file" ? ("csv" as const) : p.source === "hunter" ? ("hunter" as const) : ("apollo" as const),
       email: p.email,
       confidence: null,
       fit: p.fit ? { priority: p.fit, reason: p.reason } : null,
     })),
     selected: a.people.filter((p) => p.picked).map((p) => p.id),
-    templates: legacy.length ? a.emails : null,
+    // Written by the board's Start, or by the first version for its drafts.
+    templates: a.emails ?? null,
+    templateSel: a.templateId ?? "",
     // Drafts the first version already made show up as drafted rows, with
     // Send / Schedule, instead of the people looking undrafted.
     results: Object.fromEntries(legacy.map((d) => [d.personId, {
@@ -749,7 +1097,9 @@ export function claimPending(): { id: string; workspace: ReturnType<typeof toWor
   const all = readAll();
   const now = new Date().toISOString();
   const out = Object.values(all)
-    .filter((a) => isReady(a) && !a.openedAt)
+    // Rows the board started stay on the board (its review queue drafts them);
+    // they open in Applications only when you ask for one.
+    .filter((a) => isReady(a) && !a.openedAt && !a.startedAt)
     .sort((x, y) => Date.parse(y.appliedAt) - Date.parse(x.appliedAt))
     .map((a) => {
       a.openedAt = now;
@@ -800,4 +1150,313 @@ export function draftCounts(): (a: Application) => number {
     const k = `${normCompany(a.org.name)}|${a.role.trim().toLowerCase()}`;
     return (byKey.get(k) ?? []).filter((t) => Date.parse(t) >= since).length;
   };
+}
+
+// ── the board ───────────────────────────────────────────────────────────────
+// One light row per application for the Applied board: no posting text and no
+// people lists, so thousands of rows load in one request. Where each one stands
+// ("stage") is worked out here from the row, the queue, the outreach log, sent
+// schedules and the last follow-up scan.
+
+export type Stage =
+  | "not_startable" // Tsenta never submitted it
+  | "not_started"
+  | "queued"
+  | "finding"
+  | "needs_website"
+  | "no_emails"
+  | "contacted"
+  | "error"
+  | "writing"
+  | "getting_resume"
+  | "ready"
+  | "in_applications" // opened as a workspace before the board existed
+  | "drafted"
+  | "sent"
+  | "replied";
+
+export interface BoardRow {
+  id: string;
+  company: string;
+  tsentaCompany: string;
+  groupKey: string;
+  domain: string | null;
+  employees: number | null;
+  industry: string | null;
+  logoUrl: string | null;
+  role: string | null;
+  url: string | null;
+  ats: string | null;
+  locations: string[];
+  skills: string[];
+  appliedAt: string;
+  bucket: Bucket;
+  tsentaState: string | null;
+  pipeline: Pipeline | null;
+  tailored: boolean | null;
+  resume: "saved" | "wanted" | "none";
+  stage: Stage;
+  detail: string | null;
+  picked: number;
+  found: number;
+  credits: number;
+  drafts: number;
+  contacted: boolean;
+  onFile: boolean;
+  inbox: string[];
+  salaryMin: number | null;
+  salaryMax: number | null;
+  sponsorship: boolean | null;
+  employmentType: string | null;
+  hasJd: boolean;
+  dupOf: string | null;
+  replied: boolean;
+  followupDue: boolean;
+  noteQueued: boolean;
+}
+
+const SCHEDULED = path.resolve("data/scheduled.json");
+
+function sentDraftIds(): Set<string> {
+  try {
+    const rows = JSON.parse(fs.readFileSync(SCHEDULED, "utf8")) as { draftId: string; status: string }[];
+    return new Set(rows.filter((r) => r.status === "sent").map((r) => r.draftId));
+  } catch {
+    return new Set();
+  }
+}
+
+function replyState(): Map<string, { replied: boolean; due: boolean }> {
+  const out = new Map<string, { replied: boolean; due: boolean }>();
+  for (const c of readScanResult()?.companies ?? []) {
+    out.set(c.companyKey, { replied: c.someoneReplied, due: c.dueCount > 0 });
+  }
+  return out;
+}
+
+const hasResume = (a: Application) => !!a.resumePath && fs.existsSync(a.resumePath);
+
+export function stageOf(
+  a: Application,
+  ctx: { queued: Set<string>; drafts: number; sent: boolean; replied: boolean },
+): { stage: Stage; detail: string | null } {
+  const bucket = a.bucket ?? "submitted";
+  if (bucket !== "submitted") return { stage: "not_startable", detail: a.tsentaState ?? null };
+  if (ctx.replied && (ctx.sent || ctx.drafts > 0)) return { stage: "replied", detail: null };
+  if (ctx.sent) return { stage: "sent", detail: null };
+  if (ctx.drafts > 0 || a.status === "drafted") return { stage: "drafted", detail: `${ctx.drafts || a.drafts?.length || 0} in Gmail` };
+  if (ctx.queued.has(a.id)) return { stage: "queued", detail: null };
+  switch (a.status) {
+    case "preparing":
+      return { stage: "finding", detail: null };
+    case "writing":
+      return { stage: "writing", detail: null };
+    case "stuck": {
+      // Rows stuck before the board kept no reason: read it off the message.
+      const r = a.stuckReason ?? (
+        /enter its website/i.test(a.error ?? "") ? "company"
+          : /has an email|can find/i.test(a.error ?? "") ? "no_emails"
+            : /emailed before/i.test(a.error ?? "") ? "contacted"
+              : "other");
+      const stage: Stage = r === "company" ? "needs_website" : r === "no_emails" ? "no_emails" : r === "contacted" ? "contacted" : "error";
+      return { stage, detail: a.error };
+    }
+    case "ready": {
+      const waiting = a.resumeWanted && !hasResume(a) && (a.options?.resumeFallback ?? "wait") === "wait";
+      return waiting ? { stage: "getting_resume", detail: "Fetched on the next Tsenta sync" } : { stage: "ready", detail: null };
+    }
+    case "review":
+      return a.openedAt ? { stage: "in_applications", detail: null } : { stage: "not_started", detail: null };
+    default:
+      return { stage: "not_started", detail: null };
+  }
+}
+
+export function boardRows(queued: Set<string> = new Set()): BoardRow[] {
+  const apps = listApplications();
+  const drafts = draftCounts();
+  const sent = sentDraftIds();
+  const replies = replyState();
+  const contacted = contactedCompanies();
+  const contactedNames = new Set(contacted.names);
+  const contactedDomains = new Set(contacted.domains);
+  const onFile = new Set<string>();
+  for (const c of contactsCompanyList()) {
+    onFile.add(normCompany(c.name));
+    if (c.domain) onFile.add(c.domain.toLowerCase());
+  }
+
+  // The same job applied to twice shows once: same company, role and posting.
+  const dupKey = (a: Application) =>
+    `${normCompany(a.company)}|${(a.role ?? "").trim().toLowerCase()}|${(a.url ?? "").split("?")[0].toLowerCase()}`;
+  const newest = new Map<string, Application>();
+  for (const a of apps) {
+    const k = dupKey(a);
+    const cur = newest.get(k);
+    if (!cur || Date.parse(a.appliedAt) > Date.parse(cur.appliedAt)) newest.set(k, a);
+  }
+
+  return apps.map((a) => {
+    const name = a.org?.name ?? a.company;
+    const companyKey = normCompany(name);
+    const domain = a.org?.domain ?? null;
+    const bd = a.boardDrafts ?? [];
+    const nDrafts = Math.max(drafts(a), bd.length);
+    const wasSent = bd.some((d) => d.sentAt || sent.has(d.draftId)) || (a.drafts ?? []).some((d) => d.sentAt || sent.has(d.draftId));
+    const reply = replies.get(companyKey) ?? replies.get(normCompany(a.company));
+    const { stage, detail } = stageOf(a, { queued, drafts: nDrafts, sent: wasSent, replied: !!reply?.replied });
+    const { picked, credits } = creditsFor(a);
+    const keep = newest.get(dupKey(a));
+    return {
+      id: a.id,
+      company: name,
+      tsentaCompany: a.company,
+      groupKey: companyKey,
+      domain,
+      employees: a.org?.employees ?? null,
+      industry: a.org?.industry ?? null,
+      logoUrl: a.org?.logoUrl ?? null,
+      role: a.role,
+      url: a.url,
+      ats: a.ats,
+      locations: a.locations ?? [],
+      skills: a.skillTags ?? [],
+      appliedAt: a.appliedAt,
+      bucket: a.bucket ?? "submitted",
+      tsentaState: a.tsentaState ?? null,
+      pipeline: a.pipeline ?? null,
+      tailored: a.tailored ?? null,
+      resume: hasResume(a) ? "saved" : a.resumeWanted ? "wanted" : "none",
+      stage,
+      detail,
+      picked,
+      found: a.found,
+      credits,
+      drafts: nDrafts,
+      contacted: contactedNames.has(companyKey) || contactedNames.has(normCompany(a.company)) || (!!domain && contactedDomains.has(domain.toLowerCase())),
+      onFile: onFile.has(companyKey) || (!!domain && onFile.has(domain.toLowerCase())),
+      inbox: [...new Set((a.inbox ?? []).map((m) => m.category))],
+      salaryMin: a.details?.salaryMin ?? null,
+      salaryMax: a.details?.salaryMax ?? null,
+      sponsorship: a.details?.sponsorship ?? null,
+      employmentType: a.details?.employmentType ?? null,
+      hasJd: !!a.jd,
+      dupOf: keep && keep.id !== a.id ? keep.id : null,
+      replied: !!reply?.replied,
+      followupDue: !!reply?.due,
+      noteQueued: !!a.noteQueuedAt && !a.notedAt,
+    };
+  });
+}
+
+/** Ids whose posting text contains every word of the query. */
+export function searchPostings(q: string): string[] {
+  const words = q.toLowerCase().split(/\s+/).filter((w) => w.length >= 2);
+  if (!words.length) return [];
+  return listApplications()
+    .filter((a) => {
+      const text = (a.jd ?? "").toLowerCase();
+      return text && words.every((w) => text.includes(w));
+    })
+    .map((a) => a.id);
+}
+
+// ── what the board spent ────────────────────────────────────────────────────
+
+const SPEND = path.join(DIR, "spend.jsonl");
+
+export interface SpendEntry {
+  at: string;
+  kind: "start" | "drafts" | "followups";
+  what: string;
+  claude: number;
+  credits: number;
+  ids: string[];
+}
+
+export function logSpend(e: Omit<SpendEntry, "at">): void {
+  fs.mkdirSync(DIR, { recursive: true });
+  fs.appendFileSync(SPEND, JSON.stringify({ at: new Date().toISOString(), ...e }) + "\n");
+}
+
+export function readSpend(limit = 200): SpendEntry[] {
+  try {
+    return fs.readFileSync(SPEND, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as SpendEntry).reverse().slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
+// ── drafts and sends from the review queue ──────────────────────────────────
+
+export function recordDrafts(id: string, drafts: Omit<BoardDraft, "at" | "sentAt">[], credits: number): Application {
+  const at = new Date().toISOString();
+  const app = updateApplication(id, (a) => {
+    const list = a.boardDrafts ?? [];
+    for (const d of drafts) {
+      const i = list.findIndex((x) => x.personId === d.personId);
+      const row = { ...d, at, sentAt: i >= 0 ? list[i].sentAt : null };
+      if (i >= 0) list[i] = row;
+      else list.push(row);
+    }
+    a.boardDrafts = list;
+  });
+  logSpend({ kind: "drafts", what: `Created drafts · ${app.org?.name ?? app.company}`, claude: 0, credits, ids: [id] });
+  return app;
+}
+
+export function recordSent(id: string, draftIds: string[]): Application {
+  const at = new Date().toISOString();
+  return updateApplication(id, (a) => {
+    for (const d of a.boardDrafts ?? []) if (draftIds.includes(d.draftId)) d.sentAt = d.sentAt ?? at;
+  });
+}
+
+/** Who an email went to, by title: the reply-rate chart's first split. */
+export function audienceOf(title: string): "Recruiters" | "Founders" | "The role’s team" {
+  const own = ownRole(title);
+  if (RECRUIT_RE.test(own)) return "Recruiters";
+  if (FOUNDER_RE.test(own)) return "Founders";
+  return "The role’s team";
+}
+
+export interface HistoryLine {
+  at: string | null;
+  source: "Tsenta" | "Inbox" | "warmreach";
+  text: string;
+}
+
+/** Everything that happened to one application, oldest first. */
+export function historyOf(a: Application): HistoryLine[] {
+  const out: HistoryLine[] = [];
+  out.push({ at: a.appliedAt, source: "Tsenta", text: a.tailored ? "Applied with a tailored résumé" : "Applied" });
+  if (a.pipelineHistory?.length) out.push({ at: null, source: "Tsenta", text: `Pipeline: ${a.pipelineHistory.map((s) => s.charAt(0) + s.slice(1).toLowerCase()).join(" → ")}` });
+  for (const m of [...(a.inbox ?? [])].reverse()) out.push({ at: m.at, source: "Inbox", text: `${m.category.charAt(0) + m.category.slice(1).toLowerCase()}: ${m.subject}` });
+  const names = new Set([normCompany(a.company), a.org ? normCompany(a.org.name) : ""]);
+  const since = a.startedAt ? Date.parse(a.startedAt) : Infinity;
+  const earlier = outreachRows().filter((r) => names.has(normCompany(r.company)) && Date.parse(r.timestamp) < since);
+  out.push(earlier.length
+    ? { at: earlier[earlier.length - 1].timestamp, source: "warmreach", text: `Emailed ${earlier.length} ${earlier.length === 1 ? "person" : "people"} here before` }
+    : { at: null, source: "warmreach", text: "Never contacted before" });
+  if (a.startedAt) out.push({ at: a.startedAt, source: "warmreach", text: "Started" });
+  if (a.preparedAt && a.org) out.push({ at: a.preparedAt, source: "warmreach", text: `Company found · ${a.people.filter((p) => p.picked).length} of ${a.found} people picked` });
+  if (a.emailsAt) out.push({ at: a.emailsAt, source: "warmreach", text: "Emails written (2 model calls)" });
+  const bd = a.boardDrafts ?? [];
+  if (bd.length) out.push({ at: bd[0].at, source: "warmreach", text: `${bd.length} ${bd.length === 1 ? "draft" : "drafts"} created` });
+  const sent = bd.filter((d) => d.sentAt);
+  if (sent.length) out.push({ at: sent[0].sentAt, source: "warmreach", text: `${sent.length} sent` });
+  if (a.notedAt) out.push({ at: a.notedAt, source: "Tsenta", text: "Note added in Tsenta" });
+  else if (a.noteQueuedAt) out.push({ at: a.noteQueuedAt, source: "Tsenta", text: "Note queued for the next sync" });
+  // Undated lines (the pipeline path, "never contacted") sort with the line
+  // added just before them, so they stay next to what they describe.
+  let prev = 0;
+  const keyed = out.map((h, i) => {
+    if (h.at) prev = Date.parse(h.at) || prev;
+    return { h, k: prev, i };
+  });
+  return keyed.sort((x, y) => x.k - y.k || x.i - y.i).map((x) => x.h);
+}
+
+export function resumeFileOf(a: Application): string | null {
+  return a.resumePath && fs.existsSync(a.resumePath) ? a.resumePath : null;
 }
