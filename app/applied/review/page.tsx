@@ -30,6 +30,9 @@ interface Detail {
 }
 interface Mail { include: boolean; subject: string; body: string; result?: { ok: boolean; text: string } }
 
+// Emails written before Markdown was stripped at write time (see plainEmail in src/appliedRun.ts).
+const plain = (s: string) => s.replace(/\*\*(.+?)\*\*/gs, "$1").replace(/__(.+?)__/gs, "$1").replace(/^#{1,6}\s+/gm, "");
+
 const VERSION: Record<Variant, string> = { recruiter: "Recruiter version", engineering: "Engineering version" };
 const SOURCE = { apollo: "apollo", file: "csv", hunter: "hunter" } as const;
 
@@ -91,7 +94,7 @@ export default function ReviewQueue() {
       const m: Record<string, Mail> = {};
       for (const p of r.application.people.filter((x) => x.picked)) {
         const e = r.application.emails?.[p.variant] ?? r.application.emails?.recruiter;
-        m[p.id] = { include: true, subject: e?.subject ?? "", body: e?.body ?? "" };
+        m[p.id] = { include: true, subject: plain(e?.subject ?? ""), body: plain(e?.body ?? "") };
       }
       setMails(m);
     }).catch(() => live && setErr("Couldn’t load this application."));
@@ -227,8 +230,10 @@ export default function ReviewQueue() {
                 <h2>{a.org?.name ?? a.company}</h2>
                 <span className="meta">{a.role}{a.pipeline ? ` · ${a.pipeline.toLowerCase()} in Tsenta` : ""} · 2 emails written for this company (recruiter, engineering), each person's greeting filled in</span>
               </div>
-              <a href={`/applied?open=${encodeURIComponent(a.id)}`} className="wb-link" style={{ fontSize: 13 }}>Details</a>
-              <a href={`/?tsenta=${encodeURIComponent(a.id)}`} className="wb-link" style={{ fontSize: 13 }}>Open in Applications</a>
+              <span style={{ display: "flex", gap: 16, whiteSpace: "nowrap" }}>
+                <a href={`/applied?open=${encodeURIComponent(a.id)}`} className="wb-link" style={{ fontSize: 13 }}>Details</a>
+                <a href={`/?tsenta=${encodeURIComponent(a.id)}`} className="wb-link" style={{ fontSize: 13 }}>Open in Applications</a>
+              </span>
             </header>
 
             {!a.emails && <div className="wb-err">This application has no written emails. Start it again from the board.</div>}

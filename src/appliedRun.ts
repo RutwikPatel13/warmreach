@@ -127,16 +127,24 @@ function presetText(presetId: string | null): string {
   return loadStore().presets.find((p) => p.id === presetId)?.instructions ?? "";
 }
 
+// The free models sometimes answer in Markdown ("**RISC-V processors**").
+// Emails go out as plain text, where those marks would show as typed.
+export function plainEmail(e: Email): Email {
+  const strip = (s: string) => s.replace(/\*\*(.+?)\*\*/gs, "$1").replace(/__(.+?)__/gs, "$1").replace(/^#{1,6}\s+/gm, "");
+  return { subject: strip(e.subject), body: strip(e.body) };
+}
+
 async function writeEmails(a: Application, opts: StartOptions): Promise<Record<Variant, Email>> {
   const org = a.org!;
   const role = (a.role ?? "the role").trim();
-  return generateVariants(
+  const v = await generateVariants(
     { name: org.name, description: org.description, keywords: org.keywords },
     role,
     a.jd ?? undefined,
     presetText(opts.presetId) || undefined,
     baseFromTemplate(opts.templateId, org.name, role),
   );
+  return { recruiter: plainEmail(v.recruiter), engineering: plainEmail(v.engineering) };
 }
 
 const hasResume = (a: Application) => !!a.resumePath && fs.existsSync(a.resumePath);

@@ -33,6 +33,7 @@ const NAV: { href: string; icon: string; label: string }[] = [
   { href: "/", icon: "◱", label: "Applications" },
   { href: "/applied", icon: "⇣", label: "Applied" },
   { href: "/applied/review", icon: "✓", label: "Review queue" },
+  { href: "/applied/results", icon: "▥", label: "Results" },
   { href: "/campaigns", icon: "◎", label: "Campaigns" },
   { href: "/templates", icon: "✎", label: "Templates" },
   { href: "/companies", icon: "◨", label: "Companies" },
@@ -118,7 +119,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <div className="cmp-nav">
               {NAV.map((n) => {
                 // Applied owns its sub-pages (/applied/[id]); everything else matches exactly.
-                const active = n.href === "/applied" ? pathname.startsWith("/applied") && !pathname.startsWith("/applied/review") : pathname === n.href;
+                const active = n.href === "/applied" ? pathname === "/applied" || (pathname.startsWith("/applied/") && !/^\/applied\/(review|results)/.test(pathname)) : pathname === n.href;
                 return (
                   <a
                     key={n.href}
@@ -128,7 +129,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                   >
                     {n.icon}&nbsp; {n.label}
                     {n.href === "/matches" && <MatchCount />}
-                    {n.href === "/applied" && <AppliedCount />}
+                    {n.href === "/applied/review" && <ReviewCount />}
                   </a>
                 );
               })}
@@ -199,15 +200,16 @@ function MatchCount() {
 
 // Applications ready to review — prepared, emails written, nothing drafted yet.
 // Same contract as MatchCount: silent on any error, hidden at zero.
-function AppliedCount() {
+// Applications Start has taken to written emails, waiting in the review queue.
+function ReviewCount() {
   const pathname = usePathname();
   const [count, setCount] = useState(0);
   useEffect(() => {
     let live = true;
-    fetch("/api/applied")
+    fetch("/api/applied/queue")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (live && d?.rows) setCount(d.rows.filter((r: { status: string }) => r.status === "review").length);
+        if (live && typeof d?.review === "number") setCount(d.review);
       })
       .catch(() => {});
     return () => { live = false; };
