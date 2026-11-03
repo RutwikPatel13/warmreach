@@ -141,6 +141,7 @@ export interface Company {
   keywords: string[];
   employees?: number;
   logoUrl?: string; // Apollo org logo (free — already on the resolved org object)
+  industry?: string;
 }
 
 // Pull the company facts we personalize from off an Apollo org object. The
@@ -156,6 +157,7 @@ function companyFromOrg(org: any, fallbackDomain?: string): Company {
     keywords: (org.keywords ?? []).slice(0, 12),
     employees: org.estimated_num_employees ?? undefined,
     logoUrl: org.logo_url ?? undefined,
+    industry: org.industry ?? undefined,
   };
 }
 

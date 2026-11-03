@@ -32,6 +32,7 @@ const THEME_KEY = "warmreach:v1:theme";
 const NAV: { href: string; icon: string; label: string }[] = [
   { href: "/", icon: "◱", label: "Applications" },
   { href: "/applied", icon: "⇣", label: "Applied" },
+  { href: "/applied/review", icon: "✓", label: "Review queue" },
   { href: "/campaigns", icon: "◎", label: "Campaigns" },
   { href: "/templates", icon: "✎", label: "Templates" },
   { href: "/companies", icon: "◨", label: "Companies" },
@@ -117,7 +118,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <div className="cmp-nav">
               {NAV.map((n) => {
                 // Applied owns its sub-pages (/applied/[id]); everything else matches exactly.
-                const active = n.href === "/applied" ? pathname.startsWith("/applied") : pathname === n.href;
+                const active = n.href === "/applied" ? pathname.startsWith("/applied") && !pathname.startsWith("/applied/review") : pathname === n.href;
                 return (
                   <a
                     key={n.href}
