@@ -570,13 +570,19 @@ export interface SyncMeta {
   lastSyncAt: string | null;
   syncRequestedAt: string | null;
   tsentaTotal: number | null;
+  // Submitted applications on or after this day (YYYY-MM-DD, local) get their
+  // résumé saved on every sync, so Start finds it already there. Set from the
+  // board's "Applied since" when you click Sync Tsenta.
+  resumeSince: string | null;
 }
+
+const EMPTY_META: SyncMeta = { lastSyncAt: null, syncRequestedAt: null, tsentaTotal: null, resumeSince: null };
 
 export function readMeta(): SyncMeta {
   try {
-    return { lastSyncAt: null, syncRequestedAt: null, tsentaTotal: null, ...JSON.parse(fs.readFileSync(META, "utf8")) };
+    return { ...EMPTY_META, ...JSON.parse(fs.readFileSync(META, "utf8")) };
   } catch {
-    return { lastSyncAt: null, syncRequestedAt: null, tsentaTotal: null };
+    return { ...EMPTY_META };
   }
 }
 
@@ -587,11 +593,22 @@ export function writeMeta(patch: Partial<SyncMeta>): SyncMeta {
   return next;
 }
 
-/** Started rows still waiting on Tsenta's résumé — what the next sync fetches. */
-export function resumesWanted(): { applicationId: string; companyName: string }[] {
-  return listApplications()
-    .filter((a) => a.resumeWanted && !(a.resumePath && fs.existsSync(a.resumePath)))
-    .map((a) => ({ applicationId: a.id, companyName: a.company }));
+export const isDay = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+/**
+ * Résumés the next sync fetches: started rows waiting on one first, then every
+ * submitted application since `since` (default: meta's resumeSince) without one.
+ * Never the whole history — one Tsenta call each.
+ */
+export function resumesWanted(since: string | null = readMeta().resumeSince): { applicationId: string; companyName: string; why: "started" | "since" }[] {
+  const from = isDay(since) ? new Date(`${since}T00:00:00`).getTime() : Infinity;
+  const missing = listApplications().filter((a) => !(a.resumePath && fs.existsSync(a.resumePath)));
+  const started = missing.filter((a) => a.resumeWanted);
+  const recent = missing.filter((a) => !a.resumeWanted && (a.bucket ?? "submitted") === "submitted" && Date.parse(a.appliedAt) >= from);
+  return [
+    ...started.map((a) => ({ applicationId: a.id, companyName: a.company, why: "started" as const })),
+    ...recent.map((a) => ({ applicationId: a.id, companyName: a.company, why: "since" as const })),
+  ];
 }
 
 /** Notes waiting to be written to Tsenta's tracker. */
