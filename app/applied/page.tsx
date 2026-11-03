@@ -14,6 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./board.css";
 import { STAGE, STAGE_GROUPS, STARTABLE, fmt, money, shortDate, sizeBucket, stageRank, titleCase, type BoardRow } from "./shared";
 import { Drawer } from "./Drawer";
+import { Logo } from "./Logo";
 import { StartDialog } from "./StartDialog";
 
 type Bucket = BoardRow["bucket"];
@@ -118,6 +119,8 @@ const COLS: { key: ColKey; label: string; from: string; width: string }[] = [
 const DEFAULT_COLS: ColKey[] = ["company", "role", "applied", "pipeline", "resume", "people", "outreach"];
 const COLS_KEY = "warmreach:v1:applied:cols";
 const GROUP_KEY = "warmreach:v1:applied:group";
+const SINCE_KEY = "warmreach:v1:applied:since";
+const longDate = (ymd: string) => new Date(`${ymd}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 function sortValue(r: Row, k: SortKey): string | number {
   switch (k) {
@@ -141,8 +144,13 @@ function sortValue(r: Row, k: SortKey): string | number {
 function cell(r: Row, k: ColKey) {
   switch (k) {
     case "company": {
-      const sub = [r.domain ?? (r.stage === "needs_website" ? "website not found" : null), r.employees != null ? `${fmt(r.employees)} people` : null, r.roles > 1 ? `${r.roles} roles` : null].filter(Boolean).join(" · ");
-      return <><b>{r.company}</b><span className="sub">{sub || " "}</span></>;
+      const sub = [r.domain ?? r.site ?? (r.stage === "needs_website" ? "website not found" : null), r.employees != null ? `${fmt(r.employees)} people` : null, r.roles > 1 ? `${r.roles} roles` : null].filter(Boolean).join(" · ");
+      return (
+        <span className="wb-co">
+          <Logo name={r.company} logoUrl={r.logoUrl} site={r.site} />
+          <span className="t"><b>{r.company}</b><span className="sub">{sub || "\u00a0"}</span></span>
+        </span>
+      );
     }
     case "role": return <>{r.role ?? "Role from the posting"}{r.roles > 1 && <span className="wb-n">+{r.roles - 1}</span>}<span className="sub">{[r.ats ? titleCase(r.ats) : null, r.locations[0]].filter(Boolean).join(" · ") || " "}</span></>;
     case "applied": return shortDate(r.appliedAt);
@@ -195,6 +203,9 @@ export default function AppliedBoard() {
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [words, setWords] = useState<string[]>([]);
   const [minSalary, setMinSalary] = useState(0);
+  // "Applied since" (YYYY-MM-DD, local day). Remembered here; /applied?since=2026-10-25 sets it.
+  const [since, setSinceState] = useState("");
+  const setSince = (v: string) => { setSinceState(v); writeLocal(SINCE_KEY, v); };
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "applied", dir: -1 });
   const [group, setGroup] = useState(false);
   const [cols, setCols] = useState<ColKey[]>(DEFAULT_COLS);
@@ -215,6 +226,9 @@ export default function AppliedBoard() {
   useEffect(() => {
     setCols(readLocal<ColKey[]>(COLS_KEY, DEFAULT_COLS).filter((k) => COLS.some((c) => c.key === k)));
     setGroup(readLocal<boolean>(GROUP_KEY, false));
+    const fromUrl = new URLSearchParams(window.location.search).get("since");
+    if (fromUrl && /^\d{4}-\d{2}-\d{2}$/.test(fromUrl)) { setSinceState(fromUrl); writeLocal(SINCE_KEY, fromUrl); }
+    else setSinceState(readLocal<string>(SINCE_KEY, ""));
   }, []);
 
   const load = useCallback(async () => {
@@ -290,6 +304,7 @@ export default function AppliedBoard() {
     }
     if (words.length && !words.some((w) => (r.role ?? "").toLowerCase().includes(w))) return false;
     if (minSalary > 0 && (r.salaryMax ?? r.salaryMin ?? -1) < minSalary * 1000) return false;
+    if (since && Date.parse(r.appliedAt) < new Date(`${since}T00:00:00`).getTime()) return false;
     for (const f of FACETS) {
       if (f.key === except) continue;
       const want = filters[f.key];
@@ -298,13 +313,16 @@ export default function AppliedBoard() {
       if (!want.some((w) => have.includes(w))) return false;
     }
     return true;
-  }, [tab, q, jdIds, words, minSalary, filters, now]);
+  }, [tab, q, jdIds, words, minSalary, since, filters, now]);
 
+  // Tab counts follow the date window, so they match what's listed.
   const tabCounts = useMemo(() => {
-    const c: Record<string, number> = { all: visibleRows.length };
-    for (const r of visibleRows) c[r.bucket] = (c[r.bucket] ?? 0) + 1;
+    const from = since ? new Date(`${since}T00:00:00`).getTime() : 0;
+    const inWindow = visibleRows.filter((r) => Date.parse(r.appliedAt) >= from);
+    const c: Record<string, number> = { all: inWindow.length };
+    for (const r of inWindow) c[r.bucket] = (c[r.bucket] ?? 0) + 1;
     return c;
-  }, [visibleRows]);
+  }, [visibleRows, since]);
 
   const shown = useMemo(() => {
     const list = visibleRows.filter((r) => passes(r));
@@ -376,8 +394,8 @@ export default function AppliedBoard() {
   const activeChips = FACETS.flatMap((f) => filters[f.key].map((v) => ({ f: f.key, v, label: `${f.name}: ${v}` })));
   // A chip's count: rows with that value, given every other filter.
   const chipCount = (f: Facet, v: string) => visibleRows.filter((r) => passes(r, f) && valuesOf(r, f, now).includes(v)).length;
-  const nFilters = activeChips.length + (words.length ? 1 : 0) + (minSalary ? 1 : 0);
-  const clearFilters = () => { setFilters(NO_FILTERS); setWords([]); setMinSalary(0); };
+  const nFilters = activeChips.length + (words.length ? 1 : 0) + (minSalary ? 1 : 0) + (since ? 1 : 0);
+  const clearFilters = () => { setFilters(NO_FILTERS); setWords([]); setMinSalary(0); setSince(""); };
 
   const requestSync = async () => {
     try {
@@ -430,6 +448,7 @@ export default function AppliedBoard() {
         ))}
         {words.length > 0 && <button type="button" className="wb-chip on" onClick={() => setWords([])}>Role: {words.join(", ")} ×</button>}
         {minSalary > 0 && <button type="button" className="wb-chip on" onClick={() => setMinSalary(0)}>Salary ${minSalary}k+ ×</button>}
+        {since && <button type="button" className="wb-chip on" onClick={() => setSince("")} aria-label={`Remove applied since ${longDate(since)}`}>Applied since {longDate(since)} ×</button>}
         {QUICK.filter((f) => !filters[f].length).map((f) => (
           <button key={f} type="button" className="wb-chip" onClick={() => setPanel("filters")}>{FACETS.find((x) => x.key === f)!.name} ▾</button>
         ))}
@@ -544,10 +563,10 @@ export default function AppliedBoard() {
       {panel === "filters" && (
         <FiltersPanel
           rows={visibleRows} passes={passes} now={now} filters={filters} setFilters={setFilters}
-          words={words} setWords={setWords} minSalary={minSalary} setMinSalary={setMinSalary}
+          words={words} setWords={setWords} minSalary={minSalary} setMinSalary={setMinSalary} since={since} setSince={setSince}
           matchCount={visibleRows.filter((r) => passes(r)).length} total={visibleRows.length}
           onClose={() => setPanel(null)} onClear={clearFilters} dupes={dupes}
-          onCancel={(snap) => { setFilters(snap.filters); setWords(snap.words); setMinSalary(snap.minSalary); setPanel(null); }}
+          onCancel={(snap) => { setFilters(snap.filters); setWords(snap.words); setMinSalary(snap.minSalary); setSince(snap.since); setPanel(null); }}
         />
       )}
       {panel === "columns" && (
@@ -577,16 +596,18 @@ function FiltersPanel(p: {
   words: string[];
   setWords: (w: string[]) => void;
   minSalary: number;
+  since: string;
+  setSince: (v: string) => void;
   setMinSalary: (n: number) => void;
   matchCount: number;
   total: number;
   dupes: number;
   onClose: () => void;
   onClear: () => void;
-  onCancel: (snap: { filters: Filters; words: string[]; minSalary: number }) => void;
+  onCancel: (snap: { filters: Filters; words: string[]; minSalary: number; since: string }) => void;
 }) {
   const [more, setMore] = useState<Set<Facet>>(new Set());
-  const [snap] = useState(() => ({ filters: p.filters, words: p.words, minSalary: p.minSalary }));
+  const [snap] = useState(() => ({ filters: p.filters, words: p.words, minSalary: p.minSalary, since: p.since }));
   const [word, setWord] = useState("");
 
   // Each option's count is what the board would show with it ticked, given the
@@ -668,6 +689,14 @@ function FiltersPanel(p: {
             <span className="wb-cap">Minimum salary · known for {fmt(salaryKnown)} rows</span>
             <input type="range" min={0} max={300} step={10} value={p.minSalary} onChange={(e) => p.setMinSalary(Number(e.target.value))} style={{ accentColor: "var(--accent)" }} />
             <span className="meta">{p.minSalary ? `$${p.minSalary}k and up (rows without a salary are hidden)` : "Any"}</span>
+          </label>
+          <label>
+            <span className="wb-cap">Applied since</span>
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="date" value={p.since} onChange={(e) => p.setSince(e.target.value)} style={{ maxWidth: 180, padding: "7px 10px" }} />
+              {p.since && <button type="button" className="wb-link" onClick={() => p.setSince("")}>Any date</button>}
+            </span>
+            <span className="meta">Remembered on this computer.</span>
           </label>
         </div>
         <div className="wb-panel-f">

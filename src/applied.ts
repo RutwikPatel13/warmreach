@@ -169,6 +169,8 @@ export interface Application {
   bucket?: Bucket;
   tsentaState?: string | null; // raw status, e.g. COMPLETED, PENDING_RESUME_REVIEW
   jobId?: string | null;
+  listingId?: string | null;
+  workplaceType?: string | null;
   locations?: string[];
   skillTags?: string[];
   tailored?: boolean | null; // Tsenta submitted an optimized résumé
@@ -267,7 +269,9 @@ export interface TsentaRow {
   jobDescription?: string | null;
   resumePdfUrl?: string | null;
   // list-applications
-  jobId?: string | null;
+  jobId?: string | null; // the apply run's id
+  listingId?: string | null; // the posting's id: what get-job-details takes
+  workplaceType?: string | null; // REMOTE / HYBRID / ONSITE
   locations?: unknown[];
   skillTags?: unknown[];
   useOptimizedResume?: boolean;
@@ -278,6 +282,7 @@ export interface TsentaRow {
   statusHistory?: unknown[];
   notes?: string | null;
   linkedEmailCount?: number;
+  latestLinkedEmail?: { subject?: string | null; category?: string | null; receivedAt?: string | null } | null;
 }
 
 export interface ImportResult {
@@ -351,6 +356,12 @@ export async function importApplications(rows: TsentaRow[]): Promise<ImportResul
     const url = r.url?.trim() || r.applicationUrl?.trim() || null;
     const jd = r.jobDescription?.trim() || null;
     const existing = all[id];
+    // The tracker only adds to applications already here: its own rows can carry
+    // placeholder names ("Unknown Company") that shouldn't become new ones.
+    if (!existing && tracker) {
+      out.skipped++;
+      continue;
+    }
 
     if (!existing) {
       all[id] = {
@@ -403,11 +414,22 @@ export async function importApplications(rows: TsentaRow[]): Promise<ImportResul
       if (r.id) a.trackerId = r.id;
       if (r.notes !== undefined) a.tsentaNotes = r.notes ?? null;
       if (typeof r.linkedEmailCount === "number") a.linkedEmails = r.linkedEmailCount;
+      // Its latest linked email, already sorted by Tsenta (REJECTION, INTERVIEW…),
+      // stands in for an inbox pull.
+      const m = r.latestLinkedEmail;
+      if (m?.category && m.receivedAt) {
+        const list = a.inbox ?? [];
+        const subject = (m.subject ?? "").slice(0, 160);
+        if (!list.some((x) => x.at === m.receivedAt && x.subject === subject)) list.push({ category: m.category.toUpperCase(), subject, at: m.receivedAt });
+        a.inbox = list.sort((x, y) => Date.parse(y.at) - Date.parse(x.at)).slice(0, 20);
+      }
       a.bucket = a.bucket ?? "submitted";
     } else {
       a.bucket = bucket;
       a.tsentaState = state;
       if (r.jobId) a.jobId = r.jobId;
+      if (r.listingId) a.listingId = r.listingId;
+      if (r.workplaceType) a.workplaceType = r.workplaceType;
       if (r.locations) a.locations = strings(r.locations);
       if (r.skillTags) a.skillTags = strings(r.skillTags);
       const tailored = r.isOptimized ?? r.useOptimizedResume;
@@ -512,7 +534,12 @@ const yesNo = (v: unknown): boolean | null =>
 
 export function importDetails(rows: DetailsRow[]): { matched: number; unmatched: number } {
   const all = readAll();
-  const byJob = new Map(Object.values(all).filter((a) => a.jobId).map((a) => [a.jobId!, a]));
+  // get-job-details is keyed by the posting (listingId); older rows only have jobId.
+  const byJob = new Map<string, Application>();
+  for (const a of Object.values(all)) {
+    if (a.jobId) byJob.set(a.jobId, a);
+    if (a.listingId) byJob.set(a.listingId, a);
+  }
   let matched = 0, unmatched = 0;
   for (const r of rows) {
     const a = (r.applicationId && all[r.applicationId]) || byJob.get(r.jobId ?? r.id ?? "");
@@ -1181,6 +1208,7 @@ export interface BoardRow {
   tsentaCompany: string;
   groupKey: string;
   domain: string | null;
+  site: string | null; // the company's own domain, from Apollo or else Tsenta's website: for its logo
   employees: number | null;
   industry: string | null;
   logoUrl: string | null;
@@ -1235,6 +1263,18 @@ function replyState(): Map<string, { replied: boolean; due: boolean }> {
 }
 
 const hasResume = (a: Application) => !!a.resumePath && fs.existsSync(a.resumePath);
+
+/** "https://www.acme.com/careers" → "acme.com"; job boards don't count. */
+function siteOf(website: string | null | undefined): string | null {
+  if (!website) return null;
+  try {
+    const host = new URL(/^https?:\/\//.test(website) ? website : `https://${website}`).hostname;
+    return ATS_HOSTS.test(host) ? null : registrable(host);
+  } catch {
+    return null;
+  }
+}
+const titleWord = (s: string) => (s.toUpperCase() === "ONSITE" ? "On-site" : s.charAt(0).toUpperCase() + s.slice(1).toLowerCase());
 
 export function stageOf(
   a: Application,
@@ -1313,13 +1353,15 @@ export function boardRows(queued: Set<string> = new Set()): BoardRow[] {
       tsentaCompany: a.company,
       groupKey: companyKey,
       domain,
+      site: domain ?? siteOf(a.companyWebsite),
       employees: a.org?.employees ?? null,
       industry: a.org?.industry ?? null,
       logoUrl: a.org?.logoUrl ?? null,
       role: a.role,
       url: a.url,
       ats: a.ats,
-      locations: a.locations ?? [],
+      // "Remote" etc. joins the places, so the Location filter can pick it.
+      locations: [...new Set([...(a.workplaceType ? [titleWord(a.workplaceType)] : []), ...(a.locations ?? [])])],
       skills: a.skillTags ?? [],
       appliedAt: a.appliedAt,
       bucket: a.bucket ?? "submitted",

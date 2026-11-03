@@ -85,6 +85,10 @@
 .wb-row.head button.on { color: var(--accent); }
 .wb-cell { padding: 0 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-cell:first-child { overflow: visible; text-overflow: clip; display: flex; align-items: center; }
+.wb-co { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.wb-co .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wb-mark { flex: none; display: grid; place-items: center; border-radius: 7px; background: var(--surface-2); color: var(--muted); font-weight: 700; overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
+.wb-mark img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
 .wb-cell .sub { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .wb-cell b { font-weight: 600; }
 .wb-cell.num { font-variant-numeric: tabular-nums; }
