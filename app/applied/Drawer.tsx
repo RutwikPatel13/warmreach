@@ -5,6 +5,7 @@
 // stopped at Needs website, the website goes in here and the run carries on.
 
 import { useCallback, useEffect, useState } from "react";
+import { Logo } from "./Logo";
 import { STAGE, STARTABLE, fmt, money, shortDate, titleCase, type BoardRow, type Stage } from "./shared";
 
 interface Person { id: string; firstName: string; title: string; source: "apollo" | "file" | "hunter"; email: string | null; picked: boolean; reason: string }
@@ -108,7 +109,7 @@ export function Drawer({ row, siblings, onClose, onChanged }: { row: BoardRow; s
     <div className="wb-scrim right" onClick={onClose}>
       <aside className="wb-drawer" aria-label={`${name} details`} onClick={(e) => e.stopPropagation()}>
         <div className="wb-drawer-h">
-          <div className="wb-logo" aria-hidden="true">{a?.org?.logoUrl ? <img src={a.org.logoUrl} alt="" /> : name.charAt(0)}</div>
+          <Logo name={name} logoUrl={a?.org?.logoUrl ?? row.logoUrl} site={row.site} size={44} />
           <div className="t">
             <h2>{name}</h2>
             <span className="meta">{facts || (stage === "needs_website" ? "Company not identified yet" : "Not looked up yet")}</span>
