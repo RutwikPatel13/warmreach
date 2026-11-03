@@ -43,7 +43,6 @@ export default function ResultsPage() {
           <h1>Results</h1>
           <p>Outreach to companies you applied to through Tsenta: who replied, who's due, and what it cost.</p>
         </div>
-        <div className="wb-links"><a href="/applied">Board</a><a href="/applied/review">Review queue</a><a href="/followups">Follow-ups</a></div>
         <label className="meta" style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>Period
           <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)", padding: "7px 10px", background: "var(--surface)", color: "var(--text)", font: "inherit" }}>
             <option value={7}>Last 7 days</option>

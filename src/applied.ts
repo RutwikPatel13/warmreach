@@ -1349,6 +1349,11 @@ export function boardRows(queued: Set<string> = new Set()): BoardRow[] {
   });
 }
 
+/** Rows waiting in the review queue: emails written, nothing drafted yet. */
+export function reviewCount(): number {
+  return listApplications().filter((a) => a.status === "ready" && !(a.boardDrafts?.length)).length;
+}
+
 /** Ids whose posting text contains every word of the query. */
 export function searchPostings(q: string): string[] {
   const words = q.toLowerCase().split(/\s+/).filter((w) => w.length >= 2);

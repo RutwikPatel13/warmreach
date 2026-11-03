@@ -1,6 +1,22 @@
 /* The Applied board, its review queue and results (wb- = warmreach board).
    Kept beside the pages; every color comes from the theme tokens in globals.css. */
 
+/* globals.css styles bare elements for the older pages: every <input> is a
+   full-width padded field, every <label> a muted block with a bottom margin,
+   every <button> purple (and purple again on hover). Inside these pages that
+   pushes checkboxes out of their cells and recolors tabs, chips and links on
+   hover, so it's undone here, scoped to the three pages and their overlays.
+   Kept first: class rules below with the same specificity still win. */
+:is(.wb-page, .wr-shell, .wb-scrim) label { margin: 0; color: inherit; font-weight: inherit; }
+:is(.wb-page, .wr-shell, .wb-scrim) input[type="checkbox"],
+:is(.wb-page, .wr-shell, .wb-scrim) input[type="radio"] {
+  width: 15px; height: 15px; padding: 0; margin: 0; border: 0; border-radius: 0; box-shadow: none;
+  background: none; flex: none; accent-color: var(--accent); cursor: pointer;
+}
+:is(.wb-page, .wr-shell, .wb-scrim) input:disabled { cursor: not-allowed; opacity: .35; }
+:is(.wb-page, .wr-shell, .wb-scrim) input[type="range"] { padding: 0; border: 0; background: none; box-shadow: none; }
+:is(.wb-page, .wr-shell, .wb-scrim) button { font-weight: inherit; }
+
 .wb-page { display: flex; flex-direction: column; gap: 14px; }
 .wb-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 18px; }
 .wb-head h1 { margin: 0; font-size: 26px; letter-spacing: -0.01em; }
@@ -22,13 +38,14 @@
 .wb-link { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
 
 .wb-tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); }
-.wb-tab { border: 0; background: none; padding: 9px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--muted); font: inherit; font-size: 13.5px; cursor: pointer; }
+.wb-tab { border: 0; border-radius: 0; background: none; padding: 9px 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--muted); font: inherit; font-size: 13.5px; cursor: pointer; }
 .wb-tab.on { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
 .wb-n { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
 
 .wb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .wb-search { flex: 1 1 260px; max-width: 380px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--border-strong); background: var(--surface); border-radius: var(--r-sm); padding: 7px 10px; }
-.wb-search input { border: 0; outline: 0; flex: 1; min-width: 0; background: transparent; font: inherit; font-size: 13px; color: var(--text); }
+.wb-search input { border: 0; outline: 0; flex: 1; min-width: 0; background: transparent; font: inherit; font-size: 13px; color: var(--text); padding: 2px 0; width: auto; box-shadow: none; }
+.wb-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .wb-chip { border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); border-radius: 999px; padding: 5px 11px; font: inherit; font-size: 12.5px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
 .wb-chip.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .wb-chip.add { border-style: dashed; color: var(--muted); background: transparent; }
@@ -67,6 +84,7 @@
 .wb-row.head button { border: 0; background: none; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; padding: 0; text-align: left; }
 .wb-row.head button.on { color: var(--accent); }
 .wb-cell { padding: 0 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-cell:first-child { overflow: visible; text-overflow: clip; display: flex; align-items: center; }
 .wb-cell .sub { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .wb-cell b { font-weight: 600; }
 .wb-cell.num { font-variant-numeric: tabular-nums; }
@@ -85,7 +103,10 @@
 .wb-panel-f { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
 .wb-panel-f .grow { margin-right: auto; font-size: 12.5px; color: var(--muted); }
 
-.wb-facets { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.wb-facets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 640px) { .wb-facets { grid-template-columns: minmax(0, 1fr); } }
+.wb-panel { max-height: 88vh; }
+.wb-panel > .wb-facets, .wb-panel > .wb-cols { overflow: auto; flex: 1 1 auto; min-height: 0; }
 .wb-facet { border: 0; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .wb-facet legend { padding: 0; margin-bottom: 6px; font: 600 11px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .wb-facet .hint { font-size: 12px; color: var(--muted); margin-top: -4px; }
@@ -98,14 +119,17 @@
 .wb-inputs label { flex: 1 1 260px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .wb-cap { font: 600 11px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .wb-words { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-sm); padding: 6px 8px; background: var(--surface); }
-.wb-words input { border: 0; outline: 0; flex: 1; min-width: 90px; font: inherit; font-size: 13px; background: transparent; color: var(--text); }
+.wb-words input { border: 0; outline: 0; flex: 1; min-width: 90px; font: inherit; font-size: 13px; background: transparent; color: var(--text); padding: 2px 0; width: auto; box-shadow: none; }
+.wb-words:focus-within { border-color: var(--accent); }
 .wb-word { background: var(--accent-soft); color: var(--accent); border: 0; border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 12.5px; cursor: pointer; }
 
 .wb-cols { padding: 8px 10px; display: flex; flex-direction: column; }
-.wb-cols label { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; font-size: 13.5px; }
+.wb-cols label { display: flex; align-items: center; justify-content: flex-start; gap: 10px; padding: 7px 8px; border-radius: 6px; font-size: 13.5px; color: var(--text); text-align: left; }
+.wb-cols label:hover { background: var(--bg); }
 .wb-cols label span:nth-child(2) { flex: 1; }
-.wb-cols .src { font-size: 11.5px; color: var(--muted); }
-.wb-cols .mv { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 4px; }
+.wb-cols .src { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.wb-cols .mv { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; }
+.wb-cols .mv:hover { color: var(--text); }
 
 .wb-plan { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--border); }
 .wb-plan h3 { margin: 0; font-size: 14px; }
@@ -143,7 +167,7 @@
 .wb-sec h3 { margin: 0; font-size: 14px; display: flex; gap: 8px; align-items: baseline; }
 .wb-sec h3 span { margin-left: auto; font-weight: 400; font-size: 12.5px; color: var(--muted); }
 .wb-person { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 2px 10px; align-items: start; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
-.wb-person input { margin-top: 3px; accent-color: var(--accent); }
+.wb-person input[type="checkbox"] { margin-top: 3px; }
 .wb-person .why { display: block; font-size: 12px; color: var(--muted); }
 .wb-paper { width: 84px; height: 108px; flex: none; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--paper, var(--surface)); padding: 9px 8px; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; }
 .wb-paper i { display: block; height: 3px; background: var(--border-strong); border-radius: 1px; }
@@ -163,7 +187,7 @@
 .wb-fix textarea { min-height: 110px; resize: vertical; }
 
 /* review queue */
-.wr-shell { display: flex; flex-wrap: wrap; min-height: calc(100vh - 40px); }
+.wr-shell { display: flex; flex-wrap: wrap; min-height: 100vh; align-items: stretch; }
 .wr-list { flex: 1 1 260px; max-width: 320px; border-right: 1px solid var(--border); background: var(--surface-2); display: flex; flex-direction: column; }
 .wr-list-h { padding: 22px 18px 12px; display: flex; flex-direction: column; gap: 6px; }
 .wr-list-h h1 { margin: 0; font-size: 20px; }
@@ -223,3 +247,24 @@
   .wr-main { padding: 18px 16px 0; }
   .ws-bar { grid-template-columns: 110px minmax(0, 1fr) 84px; }
 }
+
+/* Hover keeps each control's own look (see the reset at the top). */
+.wb-btn:hover { background: var(--surface); }
+.wb-btn.primary:hover { background: var(--accent-press); }
+.wb-btn.danger:hover { background: var(--surface); }
+.wb-tab:hover, .wb-link:hover, .wb-row.head button:hover, .wb-cols .mv:hover { background: none; }
+.wb-tab:hover { color: var(--text); }
+.wb-link:hover { text-decoration: underline; }
+.wb-chip:hover { background: var(--surface); border-color: var(--muted); }
+.wb-chip.on:hover { background: var(--accent-soft); border-color: var(--accent); }
+.wb-chip.add:hover { background: transparent; }
+.wb-word:hover { background: var(--accent-soft); }
+.wr-item:hover { background: var(--bg); }
+.wr-item.on:hover { background: var(--surface); }
+.wr-item.wait:hover { background: var(--warn-soft); }
+.wb-strip button.tone-none:hover { background: var(--surface-2); }
+.wb-strip button.tone-run:hover { background: var(--accent-soft); }
+.wb-strip button.tone-wait:hover { background: var(--warn-soft); }
+.wb-strip button.tone-ready:hover { background: var(--ok-soft); }
+.wb-strip button.tone-done:hover { background: var(--surface); }
+.wb-strip button.tone-err:hover { background: var(--err-soft); }

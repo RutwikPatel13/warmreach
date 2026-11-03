@@ -374,6 +374,8 @@ export default function AppliedBoard() {
   const setSortKey = (key: SortKey) => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : key === "applied" ? -1 : 1 }));
 
   const activeChips = FACETS.flatMap((f) => filters[f.key].map((v) => ({ f: f.key, v, label: `${f.name}: ${v}` })));
+  // A chip's count: rows with that value, given every other filter.
+  const chipCount = (f: Facet, v: string) => visibleRows.filter((r) => passes(r, f) && valuesOf(r, f, now).includes(v)).length;
   const nFilters = activeChips.length + (words.length ? 1 : 0) + (minSalary ? 1 : 0);
   const clearFilters = () => { setFilters(NO_FILTERS); setWords([]); setMinSalary(0); };
 
@@ -399,10 +401,6 @@ export default function AppliedBoard() {
           <h1>Applied</h1>
           <p>Every job Tsenta applied to. Filter, select, and Start runs each one up to written emails.</p>
         </div>
-        <div className="wb-links">
-          <a href="/applied/review">Review queue{rows.filter((r) => r.stage === "ready").length ? ` · ${rows.filter((r) => r.stage === "ready").length}` : ""}</a>
-          <a href="/applied/results">Results</a>
-        </div>
         <div className="wb-sync">
           <span>{meta?.lastSyncAt ? `Last synced ${shortDate(meta.lastSyncAt)}, ${new Date(meta.lastSyncAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}` : "Never synced"} · {fmt(rows.length)} here{meta?.tsentaTotal ? ` of ${fmt(meta.tsentaTotal)} in Tsenta` : ""}</span>
           {meta?.syncRequestedAt && <span className="warn">Sync requested · ask Claude to “sync tsenta”</span>}
@@ -427,7 +425,7 @@ export default function AppliedBoard() {
         </label>
         {activeChips.map((c) => (
           <button key={c.f + c.v} type="button" className="wb-chip on" onClick={() => setFilters((f) => ({ ...f, [c.f]: f[c.f].filter((x) => x !== c.v) }))} aria-label={`Remove ${c.label}`}>
-            {c.label} ×
+            {c.label} <span className="wb-n" style={{ color: "inherit", margin: 0, opacity: .8 }}>{fmt(chipCount(c.f, c.v))}</span> ×
           </button>
         ))}
         {words.length > 0 && <button type="button" className="wb-chip on" onClick={() => setWords([])}>Role: {words.join(", ")} ×</button>}
@@ -629,6 +627,27 @@ function FiltersPanel(p: {
           <span className="meta"><b className="tnum">{fmt(p.matchCount)}</b> of {fmt(p.total)} match</span>
           <button type="button" className="wb-link" onClick={p.onClear}>Clear all</button>
         </div>
+        <div className="wb-facets">
+          {FACETS.map((f) => {
+            const list = options(f.key);
+            const cap = more.has(f.key) || !f.many ? list.length : 6;
+            if (!list.length) return null;
+            return (
+              <fieldset key={f.key} className="wb-facet">
+                <legend>{f.name}</legend>
+                {f.hint && <span className="hint">{f.hint}</span>}
+                {list.slice(0, cap).map(([v, n]) => (
+                  <label key={v} className={`wb-opt${n === 0 && !p.filters[f.key].includes(v) ? " zero" : ""}`}>
+                    <input type="checkbox" checked={p.filters[f.key].includes(v)} onChange={() => flip(f.key, v)} />
+                    <span>{v}</span>
+                    <span className="wb-n">{fmt(n)}</span>
+                  </label>
+                ))}
+                {list.length > cap && <button type="button" className="wb-link" style={{ alignSelf: "flex-start", fontSize: 13 }} onClick={() => setMore((s) => new Set(s).add(f.key))}>{list.length - cap} more…</button>}
+              </fieldset>
+            );
+          })}
+        </div>
         <div className="wb-inputs">
           <label>
             <span className="wb-cap">Role keywords</span>
@@ -650,27 +669,6 @@ function FiltersPanel(p: {
             <input type="range" min={0} max={300} step={10} value={p.minSalary} onChange={(e) => p.setMinSalary(Number(e.target.value))} style={{ accentColor: "var(--accent)" }} />
             <span className="meta">{p.minSalary ? `$${p.minSalary}k and up (rows without a salary are hidden)` : "Any"}</span>
           </label>
-        </div>
-        <div className="wb-facets">
-          {FACETS.map((f) => {
-            const list = options(f.key);
-            const cap = more.has(f.key) || !f.many ? list.length : 6;
-            if (!list.length) return null;
-            return (
-              <fieldset key={f.key} className="wb-facet">
-                <legend>{f.name}</legend>
-                {f.hint && <span className="hint">{f.hint}</span>}
-                {list.slice(0, cap).map(([v, n]) => (
-                  <label key={v} className={`wb-opt${n === 0 && !p.filters[f.key].includes(v) ? " zero" : ""}`}>
-                    <input type="checkbox" checked={p.filters[f.key].includes(v)} onChange={() => flip(f.key, v)} />
-                    <span>{v}</span>
-                    <span className="wb-n">{fmt(n)}</span>
-                  </label>
-                ))}
-                {list.length > cap && <button type="button" className="wb-link" style={{ alignSelf: "flex-start", fontSize: 13 }} onClick={() => setMore((s) => new Set(s).add(f.key))}>{list.length - cap} more…</button>}
-              </fieldset>
-            );
-          })}
         </div>
         <div className="wb-panel-f">
           <span className="grow">{p.dupes > 0 ? `${p.dupes} applications Tsenta made twice are shown once.` : "Each count is what you'd see with that box ticked."}</span>

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { cancelWaiting, kick, queueView, setPaused } from "@/src/appliedRun";
+import { reviewCount } from "@/src/applied";
 import { rejectNonLocal } from "@/src/localGuard";
 
 export const runtime = "nodejs";
@@ -10,7 +11,8 @@ export async function GET(req: Request) {
   const forbidden = rejectNonLocal(req);
   if (forbidden) return forbidden;
   kick();
-  return NextResponse.json(queueView());
+  // `review` feeds the sidebar's Review queue badge.
+  return NextResponse.json({ ...queueView(), review: reviewCount() });
 }
 
 export async function POST(req: Request) {
