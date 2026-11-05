@@ -3,8 +3,7 @@
   "configurations": [
     {
       "name": "warmreach",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "serve"],
+      "url": "http://localhost:3013",
       "port": 3013
     }
   ]
